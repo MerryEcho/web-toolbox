@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.0.0
-// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（getDisplayMedia 真实捕获 + html2canvas 回退 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。全站可用，美观简约。
+// @version      4.1.0
+// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（getDisplayMedia 真实捕获 + html2canvas 回退 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -1953,6 +1953,18 @@
       #${PANEL_ID} .wt-menu-btn .wt-name { font-weight:600; }
       #${PANEL_ID} .wt-menu-btn .wt-desc { font-size:12px; color:#6b7280; margin-top:2px; }
       #${PANEL_ID} .wt-menu-btn:disabled { opacity:.5; cursor:not-allowed; }
+      #${PANEL_ID} .wt-group { margin-top:14px; padding:12px; border:1px solid #e5e7eb; border-radius:12px; }
+      #${PANEL_ID} .wt-group-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+      #${PANEL_ID} .wt-group-title { font-weight:600; font-size:14px; display:flex; align-items:center; gap:6px; }
+      #${PANEL_ID} .wt-group-extra { display:flex; align-items:center; gap:6px; font-size:13px; }
+      #${PANEL_ID} .wt-quick-row { display:flex; flex-wrap:wrap; gap:6px; }
+      #${PANEL_ID} .wt-quick-btn { flex:1 1 auto; min-width:70px; padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; background:#fff; cursor:pointer; font:inherit; font-size:13px; text-align:center; transition: border-color .15s,background .15s; }
+      #${PANEL_ID} .wt-quick-btn:hover { border-color:#2563eb; background:#f0f5ff; }
+      #${PANEL_ID} .wt-quick-btn:disabled { opacity:.5; cursor:wait; }
+      #${PANEL_ID} .wt-quick-btn.primary { border-color:#2563eb; background:#2563eb; color:#fff; }
+      #${PANEL_ID} .wt-quick-btn.primary:hover { background:#1d4ed8; }
+      #${PANEL_ID} .wt-more-btn { margin-top:8px; padding:4px 10px; border:0; background:transparent; color:#6b7280; cursor:pointer; font:inherit; font-size:12px; text-decoration:underline; }
+      #${PANEL_ID} .wt-more-btn:hover { color:#2563eb; }
       #${PANEL_ID} .wt-back { padding:6px 12px; border:1px solid #d1d5db; border-radius:8px; background:#f9fafb; cursor:pointer; font:inherit; }
       #${PANEL_ID} .wt-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:14px 0; }
       #${PANEL_ID} select { padding:7px 9px; border:1px solid #d1d5db; border-radius:8px; font:inherit; }
@@ -2031,46 +2043,165 @@
   // ===========================================================================
   // UI 模块 - 工具箱主面板
   // ===========================================================================
+  // 快捷操作辅助函数
+  // ===========================================================================
+  function quickBtn(label, onclick, opts = {}) {
+    return el('button', {
+      class: 'wt-quick-btn' + (opts.primary ? ' primary' : ''),
+      type: 'button', text: label,
+      onclick: async event => {
+        const btn = event.currentTarget;
+        const oldText = btn.textContent;
+        btn.disabled = true; btn.textContent = '…';
+        try { await onclick(btn); }
+        catch (err) { console.error('[工具箱]', err); }
+        finally { btn.disabled = false; btn.textContent = oldText; }
+      }
+    });
+  }
+
+  function moreBtn(label, onclick) {
+    return el('button', { class: 'wt-more-btn', type: 'button', text: label, onclick });
+  }
+
+  function setStatus(status, text, type = '') {
+    status.className = 'wt-status' + (type ? ' ' + type : '');
+    status.textContent = text;
+  }
+
+  // 快捷：下载第一条字幕（SRT）
+  async function quickDownloadSubtitle(status) {
+    try {
+      setStatus(status, '正在读取字幕轨道…');
+      const tracks = await loadTracks(true);
+      if (!tracks.length) throw new Error('未发现字幕轨道。可能是该视频没有字幕，或页面尚未加载完成。');
+      const track = tracks.find(t => !t.auto) || tracks[0];
+      setStatus(status, `正在下载字幕：${track.label}`);
+      await downloadTrack(track, 'srt');
+      setStatus(status, `已下载：${buildFilename(track, 'srt')}`, 'success');
+    } catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+  }
+
+  // 快捷：复制视频简介
+  async function quickCopyDescription(status) {
+    try {
+      const info = getVideoInfo();
+      if (!info) throw new Error('无法获取视频信息，请确认页面已完成加载。');
+      const text = formatVideoInfoText(info);
+      const ok = await copyTextToClipboard(text);
+      if (!ok) throw new Error('复制失败，可能是浏览器权限不足');
+      setStatus(status, `已复制视频简介到剪贴板（${text.length} 字符）`, 'success');
+    } catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+  }
+
+  // 快捷：加载并复制评论
+  async function quickCopyComments(status) {
+    try {
+      setStatus(status, '正在加载评论…');
+      const result = await getCommentsFirstPage();
+      if (!result.comments.length) throw new Error('未获取到评论');
+      const info = getVideoInfo();
+      const text = commentsToText(result.comments, info?.title);
+      const ok = await copyTextToClipboard(text);
+      if (!ok) throw new Error('复制失败，可能是浏览器权限不足');
+      setStatus(status, `已复制 ${result.comments.length} 条评论到剪贴板`, 'success');
+    } catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+  }
+
+  // 快捷：长截图（默认参数）
+  async function quickScreenshot(status, copyMode) {
+    closeToolbox();
+    let lastStatus = '';
+    await captureLongScreenshot(
+      progress => {},
+      s => { lastStatus = s; },
+      copyMode
+    );
+    openToolbox();
+    const ns = document.querySelector(`#${PANEL_ID} .wt-status`);
+    if (ns) { ns.className = 'wt-status' + (lastStatus.includes('失败') ? ' error' : ' success'); ns.textContent = lastStatus || '完成。'; }
+  }
+
   function openToolbox() {
     closeToolbox();
     ensureStyles();
 
     const status = el('div', { class: 'wt-status' });
+    const groups = [];
 
-    const menuItems = [];
+    // === 视频文字源 ===
     if (hasSubtitleFeature()) {
-      menuItems.push(el('button', {
-        class: 'wt-menu-btn', type: 'button',
-        onclick: () => openVideoTextPanel(status)
-      }, [
-        el('span', { class: 'wt-icon', text: '📺' }),
-        el('div', { class: 'wt-info' }, [
-          el('div', { class: 'wt-name', text: '视频文字源' }),
-          el('div', { class: 'wt-desc', text: isYouTube() ? 'YouTube 简介 · 字幕 · 评论' : 'B站 简介 · 字幕 · 评论' })
-        ])
+      const btns = [
+        quickBtn('下载字幕', () => quickDownloadSubtitle(status), { primary: true }),
+        quickBtn('复制简介', () => quickCopyDescription(status)),
+        quickBtn('复制评论', () => quickCopyComments(status)),
+      ];
+      groups.push(el('div', { class: 'wt-group' }, [
+        el('div', { class: 'wt-group-head' }, [
+          el('span', { class: 'wt-group-title', text: '📺 视频文字源' })
+        ]),
+        el('div', { class: 'wt-quick-row' }, btns),
+        moreBtn('更多选项（字幕格式选择/简介详情/评论翻页）→', () => openVideoTextPanel(status)),
       ]));
     }
+
+    // === 视频下载 ===
     if (isYouTube() || isBilibili()) {
-      menuItems.push(el('button', {
-        class: 'wt-menu-btn', type: 'button',
-        onclick: () => openDownloadPanel(status)
-      }, [
-        el('span', { class: 'wt-icon', text: '⬇' }),
-        el('div', { class: 'wt-info' }, [
-          el('div', { class: 'wt-name', text: '视频下载' }),
-          el('div', { class: 'wt-desc', text: isYouTube() ? '视频/音频/黑屏 mp4（需本地后端）' : '视频/音频/黑屏 mp4（DASH 合并）' })
-        ])
+      const qualitySelect = el('select', { 'aria-label': '画质' }, isBilibili()
+        ? [el('option', { value: '480P', text: '480P' }), el('option', { value: '720P', text: '720P' }), el('option', { value: '1080P', text: '1080P' })]
+        : [el('option', { value: '480p', text: '480P' }), el('option', { value: '720p', text: '720P' }), el('option', { value: '1080p', text: '1080P' }), el('option', { value: 'best', text: '最高画质' })]
+      );
+
+      const dlBtns = isBilibili()
+        ? [
+            quickBtn('下载视频', async () => {
+              try { await downloadBiliVideo(status, qualitySelect.value); }
+              catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+            }, { primary: true }),
+            quickBtn('下载音频', async () => {
+              try { await downloadBiliAudio(status); }
+              catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+            }),
+            quickBtn('黑屏mp4', async () => {
+              try { await downloadBiliBlackScreen(status); }
+              catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+            }),
+          ]
+        : [
+            quickBtn('下载视频', async () => {
+              try { await downloadYtVideo(status, qualitySelect.value); }
+              catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+            }, { primary: true }),
+            quickBtn('下载音频', async () => {
+              try { await downloadYtAudio(status); }
+              catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+            }),
+            quickBtn('黑屏mp4', async () => {
+              try { await downloadYtBlackScreen(status); }
+              catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+            }),
+          ];
+
+      groups.push(el('div', { class: 'wt-group' }, [
+        el('div', { class: 'wt-group-head' }, [
+          el('span', { class: 'wt-group-title', text: '⬇ 视频下载' }),
+          el('div', { class: 'wt-group-extra' }, [el('span', { text: '画质' }), qualitySelect]),
+        ]),
+        el('div', { class: 'wt-quick-row' }, dlBtns),
+        moreBtn(isYouTube() ? '更多选项（后端状态/详情）→' : '更多选项（详情）→', () => openDownloadPanel(status)),
       ]));
     }
-    menuItems.push(el('button', {
-      class: 'wt-menu-btn', type: 'button',
-      onclick: () => openScreenshotPanel(status)
-    }, [
-      el('span', { class: 'wt-icon', text: '📸' }),
-      el('div', { class: 'wt-info' }, [
-        el('div', { class: 'wt-name', text: '长截图' }),
-        el('div', { class: 'wt-desc', text: '自动滚动截图，优先使用真实屏幕捕获' })
-      ])
+
+    // === 长截图 ===
+    groups.push(el('div', { class: 'wt-group' }, [
+      el('div', { class: 'wt-group-head' }, [
+        el('span', { class: 'wt-group-title', text: '📸 长截图' })
+      ]),
+      el('div', { class: 'wt-quick-row' }, [
+        quickBtn('开始截图', () => quickScreenshot(status, false), { primary: true }),
+        quickBtn('复制截图', () => quickScreenshot(status, true)),
+      ]),
+      moreBtn('更多选项（手动选区/参数调整）→', () => openScreenshotPanel(status)),
     ]));
 
     const panel = el('div', {
@@ -2082,15 +2213,9 @@
           el('h2', { class: 'wt-title', text: '网页工具箱' }),
           el('button', { class: 'wt-close', type: 'button', text: '×', onclick: closeToolbox })
         ]),
-        el('div', { class: 'wt-section' }, [
-          el('p', { class: 'wt-section-title', text: '功能' }),
-          el('div', { class: 'wt-menu' }, menuItems)
-        ]),
+        ...groups,
         status,
-        el('div', {
-          class: 'wt-note',
-          text: `当前页面：${location.hostname}。视频文字源仅在 B站/YouTube 可用；长截图全站可用。`
-        })
+        el('div', { class: 'wt-note', text: `当前页面：${location.hostname}` })
       ])
     ]);
     document.body.appendChild(panel);
