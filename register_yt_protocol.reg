@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+; 注册 yt-dlp-server:// 自定义协议
+; 注册后，浏览器访问 yt-dlp-server://start 会自动调用 start_yt_server.bat
+; 该 .bat 会检查后端是否已运行，未运行则启动（最小化窗口）
+
+[HKEY_CURRENT_USER\Software\Classes\yt-dlp-server]
+@="URL:YT-DLP Server Protocol"
+"URL Protocol"=""
+
+[HKEY_CURRENT_USER\Software\Classes\yt-dlp-server\shell\open\command]
+@="\"D:\\workspace\\start_yt_server.bat\""
