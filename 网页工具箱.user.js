@@ -2108,6 +2108,69 @@
     } catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
   }
 
+  // 快捷：一键复制全部（简介 + 字幕 + 评论）
+  async function quickCopyAll(status) {
+    try {
+      const parts = [];
+      const info = getVideoInfo();
+
+      // 1. 视频简介
+      setStatus(status, '正在获取视频简介…');
+      if (info) {
+        parts.push('========== 视频简介 ==========');
+        parts.push(formatVideoInfoText(info));
+        parts.push('');
+      }
+
+      // 2. 字幕（SRT 格式，选第一条非自动生成的，否则第一条）
+      setStatus(status, '正在获取字幕…');
+      try {
+        const tracks = await loadTracks(true);
+        if (tracks.length) {
+          const track = tracks.find(t => !t.auto) || tracks[0];
+          const { raw, cues } = await fetchTrackContent(track);
+          const srtText = formatTrackText(raw, cues, 'srt');
+          parts.push('========== 字幕（SRT）==========');
+          parts.push(`# 语言：${track.label}`);
+          parts.push(srtText);
+          parts.push('');
+        } else {
+          parts.push('========== 字幕 ==========');
+          parts.push('(未发现字幕轨道)');
+          parts.push('');
+        }
+      } catch (err) {
+        parts.push('========== 字幕 ==========');
+        parts.push(`(字幕获取失败：${err?.message || err})`);
+        parts.push('');
+      }
+
+      // 3. 评论（首页）
+      setStatus(status, '正在获取评论…');
+      try {
+        const result = await getCommentsFirstPage();
+        if (result.comments.length) {
+          parts.push('========== 评论 ==========');
+          parts.push(commentsToText(result.comments, info?.title));
+        } else {
+          parts.push('========== 评论 ==========');
+          parts.push('(未获取到评论)');
+        }
+      } catch (err) {
+        parts.push('========== 评论 ==========');
+        parts.push(`(评论获取失败：${err?.message || err})`);
+      }
+
+      // 合并并复制
+      setStatus(status, '正在复制到剪贴板…');
+      const fullText = parts.join('\n');
+      const ok = await copyTextToClipboard(fullText);
+      if (!ok) throw new Error('复制失败，可能是浏览器权限不足');
+      const charCount = fullText.length;
+      setStatus(status, `已复制全部内容到剪贴板（${charCount} 字符，含简介+字幕+评论）`, 'success');
+    } catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+  }
+
   // 快捷：长截图（默认参数）
   async function quickScreenshot(status, copyMode) {
     closeToolbox();
@@ -2132,7 +2195,8 @@
     // === 视频文字源 ===
     if (hasSubtitleFeature()) {
       const btns = [
-        quickBtn('下载字幕', () => quickDownloadSubtitle(status), { primary: true }),
+        quickBtn('一键复制全部', () => quickCopyAll(status), { primary: true }),
+        quickBtn('下载字幕', () => quickDownloadSubtitle(status)),
         quickBtn('复制简介', () => quickCopyDescription(status)),
         quickBtn('复制评论', () => quickCopyComments(status)),
       ];
