@@ -1,9 +1,13 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.1.0
-// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（getDisplayMedia 真实捕获 + html2canvas 回退 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
+// @version      4.2.0
+// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（默认 html2canvas 无需授权，可选 getDisplayMedia 真实捕获 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
+// @homepageURL  https://github.com/MerryEcho/web-toolbox
+// @supportURL   https://github.com/MerryEcho/web-toolbox/issues
+// @updateURL    https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
+// @downloadURL  https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
@@ -22,8 +26,32 @@
   const PANEL_ID = 'web-toolbox-panel';
   const URL_POLL_MS = 1000;
   const REQUEST_TIMEOUT_MS = 25000;
+  const LS_SS_ENGINE = 'wt-ss-engine';
+  const LS_FAB_POS = 'wt-fab-pos';
+  const LS_FAB_COLLAPSED = 'wt-fab-collapsed';
+  const FAB_DRAG_THRESHOLD = 5;
 
   let lastUrl = location.href;
+
+  function lsGet(key, fallback = null) {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : v;
+    } catch { return fallback; }
+  }
+
+  function lsSet(key, value) {
+    try { localStorage.setItem(key, value); } catch {}
+  }
+
+  function getScreenshotEngine() {
+    const v = lsGet(LS_SS_ENGINE, 'dom');
+    return v === 'screen' ? 'screen' : 'dom';
+  }
+
+  function setScreenshotEngine(engine) {
+    lsSet(LS_SS_ENGINE, engine === 'screen' ? 'screen' : 'dom');
+  }
 
   // ===========================================================================
   // 通用工具
@@ -1565,8 +1593,19 @@
 
     let stream;
     try {
-      // getDisplayMedia 会弹出浏览器原生授权对话框，用户可能拒绝或超时
-      const getStream = uw.navigator.mediaDevices.getDisplayMedia({ video: { cursor: 'never' }, audio: false });
+      // Chromium 友好约束：优先当前标签页，减少选错窗口；不支持的字段会被忽略
+      const constraints = {
+        video: {
+          cursor: 'never',
+          displaySurface: 'browser'
+        },
+        audio: false,
+        preferCurrentTab: true,
+        selfBrowserSurface: 'include',
+        surfaceSwitching: 'exclude',
+        systemAudio: 'exclude'
+      };
+      const getStream = uw.navigator.mediaDevices.getDisplayMedia(constraints);
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('用户未响应屏幕共享请求')), 120000));
       stream = await Promise.race([getStream, timeout]);
     } catch { return null; }
@@ -1582,7 +1621,8 @@
         video.onloadedmetadata = () => { clearTimeout(timer); resolve(); };
       });
       await video.play();
-      await wait(500);
+      await wait(150);
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
       const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
       const streamW = video.videoWidth;
@@ -1788,12 +1828,18 @@
   // ===========================================================================
   // 长截图模块 - 主流程
   // ===========================================================================
+  function setFabVisible(visible) {
+    const btn = document.getElementById(BUTTON_ID);
+    if (btn) btn.style.visibility = visible ? '' : 'hidden';
+  }
+
   async function captureLongScreenshot(onProgress, onStatus, copyMode) {
     if (isCapturing) return;
     isCapturing = true;
     const options = getScreenshotOptions();
     const target = getScrollTarget();
     const originalState = saveScrollState(target);
+    setFabVisible(false);
 
     try {
       onStatus('准备截图...');
@@ -1803,13 +1849,21 @@
       const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
       if (positions.length === 0) throw new Error('没有可截图内容');
 
-      onStatus(`目标：${describeTarget(target)}，共 ${positions.length} 段`);
-      await preloadByScrolling(target, positions, options.delay);
+      onStatus(`目标：${describeTarget(target)}，共 ${positions.length} 段（${options.engine === 'screen' ? '真实捕获' : 'DOM 渲染'}）`);
+      if (options.preload) {
+        onStatus('预加载懒加载内容...');
+        await preloadByScrolling(target, positions, options.delay);
+      }
 
-      // 优先使用 getDisplayMedia 真实截图
-      let chunks = await captureWithDisplayMedia(target, options, metrics, onProgress);
-      if (!chunks) {
-        onStatus('真实截图不可用，回退到 html2canvas...');
+      let chunks = null;
+      if (options.engine === 'screen') {
+        onStatus('请求屏幕共享（请选择「此标签页」）...');
+        chunks = await captureWithDisplayMedia(target, options, metrics, onProgress);
+        if (!chunks) {
+          onStatus('真实截图不可用，回退到 DOM 渲染...');
+          chunks = await captureWithHtml2Canvas(target, options, metrics, onProgress);
+        }
+      } else {
         chunks = await captureWithHtml2Canvas(target, options, metrics, onProgress);
       }
 
@@ -1830,20 +1884,28 @@
       restoreScrollState(target, originalState);
       onStatus(`截图失败：${err?.message || err}`);
     } finally {
+      setFabVisible(true);
       isCapturing = false;
     }
   }
 
   function getScreenshotOptions() {
     const get = id => {
-      const el = document.getElementById(id);
-      return el ? Number(el.value) : NaN;
+      const node = document.getElementById(id);
+      return node ? Number(node.value) : NaN;
     };
     const clamp = (v, min, max, fb) => Number.isFinite(v) ? Math.max(min, Math.min(max, v)) : fb;
+    const engineRadio = document.querySelector('input[name="wt-engine"]:checked');
+    const engine = engineRadio ? engineRadio.value : getScreenshotEngine();
+    if (engineRadio) setScreenshotEngine(engine);
+    const preloadEl = document.getElementById('wt-preload');
+    const preload = preloadEl ? !!preloadEl.checked : false;
     return {
-      delay: clamp(get('wt-delay'), 100, 5000, 700),
+      delay: clamp(get('wt-delay'), 100, 5000, 350),
       overlap: clamp(get('wt-overlap'), 0, 1000, 80),
       scale: clamp(get('wt-scale'), 0.5, 3, 1),
+      engine: engine === 'screen' ? 'screen' : 'dom',
+      preload
     };
   }
 
@@ -1915,15 +1977,27 @@
     style.id = APP_ID;
     style.textContent = `
       #${BUTTON_ID} {
-        position: fixed; right: 18px; bottom: 86px; z-index: 2147483646;
+        position: fixed; left: auto; top: auto; right: 18px; bottom: 86px;
+        z-index: 2147483000;
         width: 48px; height: 48px; border: 0; border-radius: 50%;
         background: #111827; color: #fff; font-size: 22px; line-height: 48px;
-        text-align: center; cursor: pointer;
+        text-align: center; cursor: grab; user-select: none;
         box-shadow: 0 4px 16px rgba(0,0,0,.3);
-        transition: transform .15s, filter .15s;
+        transition: filter .15s, width .15s, height .15s, border-radius .15s, opacity .15s;
         font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+        padding: 0; touch-action: none;
       }
-      #${BUTTON_ID}:hover { filter: brightness(1.2); transform: scale(1.08); }
+      #${BUTTON_ID}:hover { filter: brightness(1.2); }
+      #${BUTTON_ID}.wt-dragging { cursor: grabbing; transition: none; }
+      #${BUTTON_ID}.wt-collapsed {
+        width: 12px; height: 48px; border-radius: 8px 0 0 8px;
+        font-size: 0; line-height: 0; opacity: .55;
+        box-shadow: 0 2px 8px rgba(0,0,0,.25);
+      }
+      #${BUTTON_ID}.wt-collapsed.wt-edge-left {
+        border-radius: 0 8px 8px 0; opacity: .55;
+      }
+      #${BUTTON_ID}.wt-collapsed:hover { opacity: .9; }
       #${PANEL_ID} {
         position: fixed; inset: 0; z-index: 2147483647; display: flex;
         align-items: center; justify-content: center; padding: 24px;
@@ -2028,16 +2102,196 @@
   }
 
   // ===========================================================================
-  // UI 模块 - 主按钮
+  // UI 模块 - 主按钮（可拖拽 / 贴边收起）
   // ===========================================================================
+  function readFabPos() {
+    try {
+      const raw = lsGet(LS_FAB_POS);
+      if (!raw) return null;
+      const pos = JSON.parse(raw);
+      if (typeof pos?.left === 'number' && typeof pos?.top === 'number') return pos;
+    } catch {}
+    return null;
+  }
+
+  function clampFabPos(left, top, size) {
+    const w = size || 48;
+    const h = size || 48;
+    const maxL = Math.max(0, innerWidth - w);
+    const maxT = Math.max(0, innerHeight - h);
+    return {
+      left: Math.max(0, Math.min(maxL, left)),
+      top: Math.max(0, Math.min(maxT, top))
+    };
+  }
+
+  function applyFabPosition(button, left, top) {
+    const collapsed = button.classList.contains('wt-collapsed');
+    const sizeW = collapsed ? 12 : 48;
+    const sizeH = collapsed ? 48 : 48;
+    const pos = clampFabPos(left, top, Math.max(sizeW, sizeH));
+    button.style.right = 'auto';
+    button.style.bottom = 'auto';
+    button.style.left = `${pos.left}px`;
+    button.style.top = `${pos.top}px`;
+    return pos;
+  }
+
+  function snapFabToNearestEdge(button) {
+    const rect = button.getBoundingClientRect();
+    const collapsed = button.classList.contains('wt-collapsed');
+    const w = collapsed ? 12 : 48;
+    const h = 48;
+    const cx = rect.left + rect.width / 2;
+    const distLeft = cx;
+    const distRight = innerWidth - cx;
+    const distTop = rect.top;
+    const distBottom = innerHeight - rect.bottom;
+    const min = Math.min(distLeft, distRight, distTop, distBottom);
+    let left = rect.left;
+    let top = rect.top;
+    button.classList.remove('wt-edge-left');
+    if (min === distLeft) {
+      left = 0;
+      button.classList.add('wt-edge-left');
+    } else if (min === distRight) {
+      left = innerWidth - w;
+    } else if (min === distTop) {
+      top = 0;
+      left = distLeft <= distRight ? 0 : innerWidth - w;
+      if (left === 0) button.classList.add('wt-edge-left');
+    } else {
+      top = innerHeight - h;
+      left = distLeft <= distRight ? 0 : innerWidth - w;
+      if (left === 0) button.classList.add('wt-edge-left');
+    }
+    const pos = applyFabPosition(button, left, top);
+    lsSet(LS_FAB_POS, JSON.stringify(pos));
+  }
+
+  function setFabCollapsed(button, collapsed) {
+    if (collapsed) {
+      button.classList.add('wt-collapsed');
+      button.title = '网页工具箱（点击展开，拖动可移动）';
+      button.textContent = '';
+      snapFabToNearestEdge(button);
+      lsSet(LS_FAB_COLLAPSED, '1');
+    } else {
+      button.classList.remove('wt-collapsed', 'wt-edge-left');
+      button.title = '网页工具箱（拖动移动，双击收起）';
+      button.textContent = '🛠';
+      const pos = readFabPos();
+      if (pos) applyFabPosition(button, pos.left, pos.top);
+      else {
+        button.style.left = 'auto';
+        button.style.top = 'auto';
+        button.style.right = '18px';
+        button.style.bottom = '86px';
+      }
+      lsSet(LS_FAB_COLLAPSED, '0');
+    }
+  }
+
+  function bindFabInteractions(button) {
+    let dragging = false;
+    let moved = false;
+    let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+    let suppressClick = false;
+
+    const onPointerDown = (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      const rect = button.getBoundingClientRect();
+      dragging = true;
+      moved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      origLeft = rect.left;
+      origTop = rect.top;
+      button.classList.add('wt-dragging');
+      button.setPointerCapture?.(e.pointerId);
+      e.preventDefault();
+    };
+
+    const onPointerMove = (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) < FAB_DRAG_THRESHOLD) return;
+      moved = true;
+      suppressClick = true;
+      applyFabPosition(button, origLeft + dx, origTop + dy);
+    };
+
+    const onPointerUp = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      button.classList.remove('wt-dragging');
+      try { button.releasePointerCapture?.(e.pointerId); } catch {}
+      if (moved) {
+        const rect = button.getBoundingClientRect();
+        const pos = applyFabPosition(button, rect.left, rect.top);
+        lsSet(LS_FAB_POS, JSON.stringify(pos));
+        if (button.classList.contains('wt-collapsed')) snapFabToNearestEdge(button);
+        setTimeout(() => { suppressClick = false; }, 0);
+      } else {
+        suppressClick = false;
+      }
+    };
+
+    button.addEventListener('pointerdown', onPointerDown);
+    button.addEventListener('pointermove', onPointerMove);
+    button.addEventListener('pointerup', onPointerUp);
+    button.addEventListener('pointercancel', onPointerUp);
+
+    let clickTimer = null;
+    button.addEventListener('click', (e) => {
+      if (suppressClick || moved) {
+        e.preventDefault();
+        e.stopPropagation();
+        moved = false;
+        return;
+      }
+      if (button.classList.contains('wt-collapsed')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setFabCollapsed(button, false);
+        return;
+      }
+      // 延迟打开，避免双击收起时第一次 click 误开面板
+      clearTimeout(clickTimer);
+      clickTimer = setTimeout(() => openToolbox(), 220);
+    });
+
+    button.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clearTimeout(clickTimer);
+      if (!button.classList.contains('wt-collapsed')) setFabCollapsed(button, true);
+    });
+
+    window.addEventListener('resize', () => {
+      if (!document.getElementById(BUTTON_ID)) return;
+      const pos = readFabPos();
+      if (pos) applyFabPosition(button, pos.left, pos.top);
+      if (button.classList.contains('wt-collapsed')) snapFabToNearestEdge(button);
+    });
+  }
+
   function ensureButton() {
     if (!document.body || document.getElementById(BUTTON_ID)) return;
     ensureStyles();
     const button = el('button', {
-      id: BUTTON_ID, type: 'button', text: '🛠', title: '网页工具箱',
-      onclick: openToolbox
+      id: BUTTON_ID, type: 'button', text: '🛠',
+      title: '网页工具箱（拖动移动，双击收起）'
     });
     document.body.appendChild(button);
+
+    const pos = readFabPos();
+    if (pos) applyFabPosition(button, pos.left, pos.top);
+
+    bindFabInteractions(button);
+
+    if (lsGet(LS_FAB_COLLAPSED) === '1') setFabCollapsed(button, true);
   }
 
   // ===========================================================================
@@ -2716,6 +2970,27 @@
 
     const target = getScrollTarget();
     const targetDesc = describeTarget(target);
+    const savedEngine = getScreenshotEngine();
+
+    const updateHint = () => {
+      const eng = document.querySelector('input[name="wt-engine"]:checked')?.value || 'dom';
+      setScreenshotEngine(eng);
+      status.className = 'wt-status';
+      status.textContent = eng === 'screen'
+        ? '真实捕获需浏览器授权：请选择「共享此标签页」。拒绝或失败时会自动回退到 DOM 渲染。'
+        : 'DOM 渲染模式无需屏幕共享授权，速度更快。复杂页面或跨域图片可改用真实捕获。';
+    };
+
+    const engineDom = el('input', {
+      type: 'radio', name: 'wt-engine', value: 'dom', style: 'width:auto;',
+      onchange: updateHint
+    });
+    const engineScreen = el('input', {
+      type: 'radio', name: 'wt-engine', value: 'screen', style: 'width:auto;',
+      onchange: updateHint
+    });
+    engineDom.checked = savedEngine !== 'screen';
+    engineScreen.checked = savedEngine === 'screen';
 
     card.appendChild(el('div', { class: 'wt-head' }, [
       el('button', { class: 'wt-back', type: 'button', text: '← 返回', onclick: openToolbox }),
@@ -2732,11 +3007,22 @@
       })
     ]));
     card.appendChild(el('div', { class: 'wt-section' }, [
+      el('p', { class: 'wt-section-title', text: '截图引擎' }),
+      el('div', { class: 'wt-opts' }, [
+        el('label', { class: 'wt-opt' }, [engineDom, ' DOM 渲染（默认，无需授权）']),
+        el('label', { class: 'wt-opt' }, [engineScreen, ' 真实捕获（屏幕共享）'])
+      ])
+    ]));
+    card.appendChild(el('div', { class: 'wt-section' }, [
       el('p', { class: 'wt-section-title', text: '参数' }),
       el('div', { class: 'wt-opts' }, [
-        el('label', { class: 'wt-opt' }, ['等待 ms ', el('input', { id: 'wt-delay', type: 'number', value: '700', min: '100', step: '100' })]),
+        el('label', { class: 'wt-opt' }, ['等待 ms ', el('input', { id: 'wt-delay', type: 'number', value: '350', min: '100', step: '50' })]),
         el('label', { class: 'wt-opt' }, ['重叠 px ', el('input', { id: 'wt-overlap', type: 'number', value: '80', min: '0', step: '10' })]),
         el('label', { class: 'wt-opt' }, ['倍率 ', el('input', { id: 'wt-scale', type: 'number', value: '1', min: '0.5', max: '3', step: '0.5' })])
+      ]),
+      el('label', { class: 'wt-opt', style: 'margin-top:8px;' }, [
+        el('input', { id: 'wt-preload', type: 'checkbox', style: 'width:auto;' }),
+        ' 预加载懒加载图（更慢，适合图片懒加载页面）'
       ]),
       el('label', { class: 'wt-opt', style: 'margin-top:8px;' }, [
         el('input', { id: 'wt-copymode', type: 'checkbox', style: 'width:auto;' }),
@@ -2761,11 +3047,10 @@
       }
     }));
     card.appendChild(status);
-    status.className = 'wt-status';
-    status.textContent = '点击"开始截图"后，浏览器会弹出屏幕共享请求。请选择"共享此标签页"以获得最佳效果。';
+    updateHint();
     card.appendChild(el('div', {
       class: 'wt-note',
-      text: '优先使用 getDisplayMedia 真实屏幕捕获（像素级无缝），不可用时回退到 html2canvas。超长页面自动分卷打包为 ZIP。自动检测并裁剪吸顶栏。'
+      text: '默认使用 DOM 渲染（html2canvas），无需屏幕共享。需要像素级真实画面时再选真实捕获。超长页面自动分卷打包为 ZIP。自动检测并裁剪吸顶栏。悬浮钮可拖动，双击可贴边收起。'
     }));
   }
 
