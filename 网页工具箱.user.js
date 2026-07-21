@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.2.1
+// @version      4.2.2
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（默认 html2canvas 无需授权，可选 getDisplayMedia 真实捕获 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
@@ -1453,14 +1453,25 @@
   }
 
   function execLibraryCode(code, globalName) {
-    // 优先在 userscript 沙箱执行：绕过 ChatGPT 等站点的 CSP（禁止页面内联 script）
-    // UMD 库用 this 挂全局，必须 .call(globalThis)，否则严格模式下 this 为 undefined
+    // Tampermonkey 沙箱常带有 module/exports，UMD 会走 CommonJS 分支而不挂 window。
+    // 自备 module 容器接住导出，同时清掉 AMD define，避免“下载成功却找不到全局变量”。
     try {
-      const runner = new Function(`${code}\n;return this.${globalName} || (typeof ${globalName} !== "undefined" ? ${globalName} : undefined);`);
+      const runner = new Function(`
+        var module = { exports: {} };
+        var exports = module.exports;
+        var define = undefined;
+        ${code}
+        ;var __lib = (typeof ${globalName} !== 'undefined' && ${globalName})
+          || (this && this.${globalName})
+          || module.exports;
+        if (__lib && typeof __lib === 'object' && __lib.default) __lib = __lib.default;
+        return __lib;
+      `);
       const fromSandbox = runner.call(globalThis);
       if (fromSandbox) {
-        globalThis[globalName] = fromSandbox;
+        try { globalThis[globalName] = fromSandbox; } catch {}
         try { window[globalName] = fromSandbox; } catch {}
+        try { uw[globalName] = fromSandbox; } catch {}
         return fromSandbox;
       }
     } catch (err) {
@@ -1468,10 +1479,14 @@
     }
 
     // 回退：注入页面（无严格 CSP 的站点）
-    const script = document.createElement('script');
-    script.textContent = code;
-    (document.head || document.documentElement).appendChild(script);
-    script.remove();
+    try {
+      const script = document.createElement('script');
+      script.textContent = code;
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+    } catch (err) {
+      console.warn('[工具箱] 页面注入失败:', globalName, err);
+    }
     return resolveLoadedLibrary(globalName);
   }
 
@@ -1486,7 +1501,7 @@
             try {
               const lib = execLibraryCode(response.responseText, globalName);
               if (lib) resolve(lib);
-              else reject(new Error(`${globalName} 加载后未找到全局变量（可能被页面 CSP 拦截）`));
+              else reject(new Error(`${globalName} 加载失败：库已下载但无法在沙箱/页面中初始化`));
             } catch (e) { reject(e); }
           } else {
             reject(new Error(`加载 ${globalName} 失败：HTTP ${response.status}`));
@@ -1894,7 +1909,14 @@
           chunks = await captureWithHtml2Canvas(target, options, metrics, onProgress);
         }
       } else {
-        chunks = await captureWithHtml2Canvas(target, options, metrics, onProgress);
+        try {
+          chunks = await captureWithHtml2Canvas(target, options, metrics, onProgress);
+        } catch (domErr) {
+          console.warn('[工具箱] DOM 截图失败，尝试真实捕获:', domErr);
+          onStatus(`DOM 渲染失败（${domErr?.message || domErr}），改用真实捕获…`);
+          chunks = await captureWithDisplayMedia(target, options, metrics, onProgress);
+          if (!chunks) throw domErr;
+        }
       }
 
       restoreScrollState(target, originalState);
