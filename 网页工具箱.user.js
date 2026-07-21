@@ -3120,7 +3120,7 @@
     updateHint();
     card.appendChild(el('div', {
       class: 'wt-note',
-      text: '默认使用 DOM 渲染（html2canvas），无需屏幕共享。需要像素级真实画面时再选真实捕获。超长页面自动分卷打包为 ZIP。自动检测并裁剪吸顶栏。悬浮钮可拖动，双击可贴边收起。'
+      text: '默认使用 DOM 渲染（html2canvas-pro，支持 ChatGPT 的 oklab 颜色），无需屏幕共享。需要像素级真实画面时再选真实捕获。超长页面自动分卷打包为 ZIP。自动检测并裁剪吸顶栏。悬浮钮可拖动，双击可贴边收起。'
     }));
   }
 
