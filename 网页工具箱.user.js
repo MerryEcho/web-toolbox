@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.2.0
+// @version      4.2.1
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（默认 html2canvas 无需授权，可选 getDisplayMedia 真实捕获 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
@@ -531,13 +531,18 @@
   // ===========================================================================
   // 视频下载模块 - 动态库加载
   // ===========================================================================
-  async function loadLibrary(url) {
+  async function loadScriptBlob(url) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         url, method: 'GET', timeout: 30000,
         onload: r => {
           if (r.status !== 200) { reject(new Error(`加载库失败：HTTP ${r.status}`)); return; }
           try {
+            try {
+              new Function(r.responseText).call(globalThis);
+              resolve();
+              return;
+            } catch {}
             const blob = new Blob([r.responseText], { type: 'application/javascript' });
             const blobUrl = URL.createObjectURL(blob);
             const s = document.createElement('script');
@@ -556,19 +561,19 @@
   const libStatus = { md5: false, mp4box: false, mp4muxer: false };
 
   async function ensureMd5() {
-    if (libStatus.md5 || window.md5) { libStatus.md5 = true; return; }
-    await loadLibrary('https://cdn.jsdelivr.net/npm/js-md5@0.8.3/src/md5.min.js');
-    libStatus.md5 = !!window.md5;
+    if (libStatus.md5 || window.md5 || globalThis.md5) { libStatus.md5 = true; return; }
+    await loadScriptBlob('https://cdn.jsdelivr.net/npm/js-md5@0.8.3/src/md5.min.js');
+    libStatus.md5 = !!(window.md5 || globalThis.md5);
   }
 
   async function ensureMp4Libs() {
     if (!libStatus.mp4box) {
-      await loadLibrary('https://cdn.jsdelivr.net/npm/mp4box@0.5.0/dist/mp4box.min.js');
-      libStatus.mp4box = !!window.MP4Box;
+      await loadScriptBlob('https://cdn.jsdelivr.net/npm/mp4box@0.5.0/dist/mp4box.min.js');
+      libStatus.mp4box = !!(window.MP4Box || globalThis.MP4Box);
     }
     if (!libStatus.mp4muxer) {
-      await loadLibrary('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.0/dist/mp4-muxer.min.js');
-      libStatus.mp4muxer = !!window.mp4Muxer;
+      await loadScriptBlob('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.0/dist/mp4-muxer.min.js');
+      libStatus.mp4muxer = !!(window.mp4Muxer || globalThis.mp4Muxer);
     }
   }
 
@@ -1443,20 +1448,45 @@
   // ===========================================================================
   // 长截图模块 - 动态加载库
   // ===========================================================================
+  function resolveLoadedLibrary(globalName) {
+    return globalThis[globalName] || window[globalName] || uw[globalName] || null;
+  }
+
+  function execLibraryCode(code, globalName) {
+    // 优先在 userscript 沙箱执行：绕过 ChatGPT 等站点的 CSP（禁止页面内联 script）
+    // UMD 库用 this 挂全局，必须 .call(globalThis)，否则严格模式下 this 为 undefined
+    try {
+      const runner = new Function(`${code}\n;return this.${globalName} || (typeof ${globalName} !== "undefined" ? ${globalName} : undefined);`);
+      const fromSandbox = runner.call(globalThis);
+      if (fromSandbox) {
+        globalThis[globalName] = fromSandbox;
+        try { window[globalName] = fromSandbox; } catch {}
+        return fromSandbox;
+      }
+    } catch (err) {
+      console.warn('[工具箱] 沙箱加载库失败，尝试页面注入:', globalName, err);
+    }
+
+    // 回退：注入页面（无严格 CSP 的站点）
+    const script = document.createElement('script');
+    script.textContent = code;
+    (document.head || document.documentElement).appendChild(script);
+    script.remove();
+    return resolveLoadedLibrary(globalName);
+  }
+
   async function loadLibrary(url, globalName) {
-    if (uw[globalName] || window[globalName]) return uw[globalName] || window[globalName];
+    const existing = resolveLoadedLibrary(globalName);
+    if (existing) return existing;
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET', url, timeout: 30000,
         onload(response) {
           if (response.status >= 200 && response.status < 300) {
             try {
-              const script = document.createElement('script');
-              script.textContent = response.responseText;
-              (document.head || document.documentElement).appendChild(script);
-              script.remove();
-              if (uw[globalName] || window[globalName]) resolve(uw[globalName] || window[globalName]);
-              else reject(new Error(`${globalName} 加载后未找到全局变量`));
+              const lib = execLibraryCode(response.responseText, globalName);
+              if (lib) resolve(lib);
+              else reject(new Error(`${globalName} 加载后未找到全局变量（可能被页面 CSP 拦截）`));
             } catch (e) { reject(e); }
           } else {
             reject(new Error(`加载 ${globalName} 失败：HTTP ${response.status}`));
@@ -1661,8 +1691,8 @@
   // 长截图模块 - html2canvas 回退
   // ===========================================================================
   async function captureWithHtml2Canvas(target, options, metrics, onProgress) {
-    await loadLibrary('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js', 'html2canvas');
-    const h2c = uw.html2canvas || window.html2canvas;
+    const h2c = await loadLibrary('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js', 'html2canvas')
+      || resolveLoadedLibrary('html2canvas');
     if (!h2c) throw new Error('html2canvas 加载失败');
 
     const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
@@ -1754,7 +1784,7 @@
 
     // 超长页面：分卷 zip
     await loadLibrary('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', 'JSZip');
-    const JSZipLib = uw.JSZip || window.JSZip;
+    const JSZipLib = resolveLoadedLibrary('JSZip');
     if (!JSZipLib) throw new Error('JSZip 加载失败');
 
     const zip = new JSZipLib();
