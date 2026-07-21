@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.2.3
-// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（默认 html2canvas 无需授权，可选 getDisplayMedia 真实捕获 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
+// @version      4.2.4
+// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（默认 html2canvas-pro，支持 oklab 等现代 CSS；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
 // @supportURL   https://github.com/MerryEcho/web-toolbox/issues
 // @updateURL    https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
 // @downloadURL  https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
-// @resource     html2canvas https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js
+// @resource     html2canvas https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.11/dist/html2canvas-pro.min.js
 // @resource     jszip https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -17,6 +17,7 @@
 // @grant        GM_getResourceText
 // @grant        unsafeWindow
 // @connect      *
+// @connect      cdn.jsdelivr.net
 // @run-at       document-start
 // ==/UserScript==
 
@@ -1723,7 +1724,7 @@
   // 长截图模块 - html2canvas 回退
   // ===========================================================================
   async function captureWithHtml2Canvas(target, options, metrics, onProgress) {
-    const h2c = await loadLibrary('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js', 'html2canvas', 'html2canvas')
+    const h2c = await loadLibrary('https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.11/dist/html2canvas-pro.min.js', 'html2canvas', 'html2canvas')
       || resolveLoadedLibrary('html2canvas');
     if (!h2c) throw new Error('html2canvas 加载失败');
 
