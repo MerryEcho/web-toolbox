@@ -1,17 +1,20 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.2.2
+// @version      4.2.3
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（默认 html2canvas 无需授权，可选 getDisplayMedia 真实捕获 + 智能吸顶栏裁剪）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
 // @supportURL   https://github.com/MerryEcho/web-toolbox/issues
 // @updateURL    https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
 // @downloadURL  https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
+// @resource     html2canvas https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js
+// @resource     jszip https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
 // @grant        GM_addStyle
+// @grant        GM_getResourceText
 // @grant        unsafeWindow
 // @connect      *
 // @run-at       document-start
@@ -1490,9 +1493,23 @@
     return resolveLoadedLibrary(globalName);
   }
 
-  async function loadLibrary(url, globalName) {
+  async function loadLibrary(url, globalName, resourceName) {
     const existing = resolveLoadedLibrary(globalName);
     if (existing) return existing;
+
+    // 优先用 @resource（安装/更新时由 Tampermonkey 缓存），避免运行时被页面 CSP/网络干扰
+    if (resourceName && typeof GM_getResourceText === 'function') {
+      try {
+        const localCode = GM_getResourceText(resourceName);
+        if (localCode && localCode.length > 100) {
+          const lib = execLibraryCode(localCode, globalName);
+          if (lib) return lib;
+        }
+      } catch (err) {
+        console.warn('[工具箱] 读取 @resource 失败:', resourceName, err);
+      }
+    }
+
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'GET', url, timeout: 30000,
@@ -1706,7 +1723,7 @@
   // 长截图模块 - html2canvas 回退
   // ===========================================================================
   async function captureWithHtml2Canvas(target, options, metrics, onProgress) {
-    const h2c = await loadLibrary('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js', 'html2canvas')
+    const h2c = await loadLibrary('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js', 'html2canvas', 'html2canvas')
       || resolveLoadedLibrary('html2canvas');
     if (!h2c) throw new Error('html2canvas 加载失败');
 
@@ -1798,7 +1815,7 @@
     }
 
     // 超长页面：分卷 zip
-    await loadLibrary('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', 'JSZip');
+    await loadLibrary('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js', 'JSZip', 'jszip');
     const JSZipLib = resolveLoadedLibrary('JSZip');
     if (!JSZipLib) throw new Error('JSZip 加载失败');
 
