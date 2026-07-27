@@ -9,4 +9,4 @@ Windows Registry Editor Version 5.00
 "URL Protocol"=""
 
 [HKEY_CURRENT_USER\Software\Classes\yt-dlp-server\shell\open\command]
-@="\"D:\\workspace\\start_yt_server.bat\""
+@="\"D:\\workspace\\repos\\web-toolbox\\start_yt_server.bat\""
