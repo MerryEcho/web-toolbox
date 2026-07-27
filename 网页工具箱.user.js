@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.2.4
-// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（默认 html2canvas-pro，支持 oklab 等现代 CSS；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
+// @version      4.3.0
+// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（DOM 双引擎：modern-screenshot + html2canvas-pro 互为回退；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
 // @supportURL   https://github.com/MerryEcho/web-toolbox/issues
 // @updateURL    https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
 // @downloadURL  https://raw.githubusercontent.com/MerryEcho/web-toolbox/main/%E7%BD%91%E9%A1%B5%E5%B7%A5%E5%85%B7%E7%AE%B1.user.js
+// @resource     modernScreenshot https://cdn.jsdelivr.net/npm/modern-screenshot@4.7.0/dist/index.js
 // @resource     html2canvas https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.11/dist/html2canvas-pro.min.js
 // @resource     jszip https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
 // @match        *://*/*
@@ -1721,32 +1722,290 @@
   }
 
   // ===========================================================================
-  // 长截图模块 - html2canvas 回退
+  // 长截图模块 - DOM 引擎（modern-screenshot 优先，html2canvas-pro 回退）
   // ===========================================================================
-  async function captureWithHtml2Canvas(target, options, metrics, onProgress) {
-    const h2c = await loadLibrary('https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.11/dist/html2canvas-pro.min.js', 'html2canvas', 'html2canvas')
-      || resolveLoadedLibrary('html2canvas');
-    if (!h2c) throw new Error('html2canvas 加载失败');
+  const DOM_CAPTURE_MAX_HEIGHT = 28000;
+  const DOM_CAPTURE_MAX_PIXELS = 120000000;
+  const MS_URL = 'https://cdn.jsdelivr.net/npm/modern-screenshot@4.7.0/dist/index.js';
+  const H2C_URL = 'https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.11/dist/html2canvas-pro.min.js';
 
+  function isToolboxChrome(el) {
+    if (!el || el.nodeType !== 1) return false;
+    const id = el.id || '';
+    return id === BUTTON_ID || id === PANEL_ID || id === APP_ID
+      || id === 'h2c-debug'
+      || (typeof el.closest === 'function' && !!el.closest(`#${PANEL_ID}, #${BUTTON_ID}`));
+  }
+
+  function canDomSingleShot(widthCss, heightCss, scale) {
+    const w = Math.ceil(Math.max(1, widthCss) * scale);
+    const h = Math.ceil(Math.max(1, heightCss) * scale);
+    return h <= DOM_CAPTURE_MAX_HEIGHT && w * h <= DOM_CAPTURE_MAX_PIXELS;
+  }
+
+  function maxDomScaleForSize(widthCss, heightCss, preferredScale) {
+    let scale = preferredScale;
+    while (scale > 0.5 && !canDomSingleShot(widthCss, heightCss, scale)) {
+      scale = Math.round((scale - 0.1) * 10) / 10;
+    }
+    return canDomSingleShot(widthCss, heightCss, scale) ? scale : 0;
+  }
+
+  function assertCanvasUsable(canvas, label) {
+    if (!canvas || !canvas.width || !canvas.height) {
+      throw new Error(`${label} 返回空画布`);
+    }
+    return canvas;
+  }
+
+  /**
+   * 截图前预处理：放开 html/body 高度、取消 sticky，并把「纯位移 transform」
+   * 烘焙成 left/top（站酷摘要等设计稿居中活动页；对 html2canvas 必需，对
+   * modern-screenshot 也更稳）。
+   */
+  function prepareDomCapture() {
+    const restores = [];
+
+    const saveStyle = (el) => {
+      const prev = el.getAttribute('style');
+      restores.push(() => {
+        if (prev == null) el.removeAttribute('style');
+        else el.setAttribute('style', prev);
+      });
+    };
+
+    for (const el of [document.documentElement, document.body]) {
+      if (!el) continue;
+      saveStyle(el);
+      el.style.setProperty('height', 'auto', 'important');
+      el.style.setProperty('max-height', 'none', 'important');
+      el.style.setProperty('overflow', 'visible', 'important');
+      el.style.setProperty('overflow-x', 'visible', 'important');
+      el.style.setProperty('overflow-y', 'visible', 'important');
+    }
+
+    const nodes = Array.from(document.querySelectorAll('body *'));
+    for (const el of nodes) {
+      if (isToolboxChrome(el)) continue;
+      const st = getComputedStyle(el);
+
+      if (st.position === 'sticky') {
+        saveStyle(el);
+        el.style.setProperty('position', 'relative', 'important');
+        el.style.setProperty('top', 'auto', 'important');
+        el.style.setProperty('bottom', 'auto', 'important');
+        continue;
+      }
+
+      if (!st.transform || st.transform === 'none') continue;
+      let m;
+      try { m = new DOMMatrixReadOnly(st.transform); } catch { continue; }
+      const hasTranslate = Math.abs(m.e) > 0.5 || Math.abs(m.f) > 0.5;
+      const nearlyIdentityLinear = Math.abs(m.a - 1) < 0.02 && Math.abs(m.d - 1) < 0.02
+        && Math.abs(m.b) < 0.02 && Math.abs(m.c) < 0.02;
+      if (!hasTranslate || !nearlyIdentityLinear) continue;
+
+      const parent = el.offsetParent || el.parentElement;
+      if (!parent) continue;
+      const parentRect = parent.getBoundingClientRect();
+      const rect = el.getBoundingClientRect();
+      const left = rect.left - parentRect.left + (parent.scrollLeft || 0);
+      const top = rect.top - parentRect.top + (parent.scrollTop || 0);
+
+      saveStyle(el);
+      el.style.setProperty('transform', 'none', 'important');
+      el.style.setProperty('translate', 'none', 'important');
+      const pos = st.position === 'static' ? 'absolute' : st.position;
+      el.style.setProperty('position', pos === 'fixed' ? 'absolute' : pos, 'important');
+      el.style.setProperty('left', `${left}px`, 'important');
+      el.style.setProperty('top', `${top}px`, 'important');
+      el.style.setProperty('width', `${rect.width}px`, 'important');
+      el.style.setProperty('height', `${rect.height}px`, 'important');
+      el.style.setProperty('margin', '0', 'important');
+    }
+
+    return () => {
+      for (let i = restores.length - 1; i >= 0; i--) {
+        try { restores[i](); } catch {}
+      }
+    };
+  }
+
+  async function loadModernScreenshot() {
+    const lib = await loadLibrary(MS_URL, 'modernScreenshot', 'modernScreenshot')
+      || resolveLoadedLibrary('modernScreenshot');
+    const fn = lib && (lib.domToCanvas || lib.default?.domToCanvas);
+    if (typeof fn !== 'function') throw new Error('modern-screenshot 加载失败');
+    return fn.bind(lib);
+  }
+
+  async function loadHtml2Canvas() {
+    const h2c = await loadLibrary(H2C_URL, 'html2canvas', 'html2canvas')
+      || resolveLoadedLibrary('html2canvas');
+    if (typeof h2c !== 'function') throw new Error('html2canvas 加载失败');
+    return h2c;
+  }
+
+  function buildModernScreenshotOptions(widthCss, heightCss, scale) {
+    return {
+      width: widthCss,
+      height: heightCss,
+      scale,
+      backgroundColor: '#ffffff',
+      // modern-screenshot: return true 表示保留节点
+      filter: (node) => !isToolboxChrome(node)
+    };
+  }
+
+  function buildHtml2CanvasOptions(base) {
+    return {
+      backgroundColor: '#ffffff',
+      useCORS: true,
+      allowTaint: false,
+      imageTimeout: 8000,
+      logging: false,
+      ignoreElements: isToolboxChrome,
+      ...base
+    };
+  }
+
+  async function captureSingleWithModern(domToCanvas, captureRoot, widthCss, heightCss, scale) {
+    const canvas = await domToCanvas(
+      captureRoot,
+      buildModernScreenshotOptions(widthCss, heightCss, scale)
+    );
+    return assertCanvasUsable(canvas, 'modern-screenshot');
+  }
+
+  async function captureSingleWithHtml2Canvas(h2c, captureRoot, widthCss, heightCss, scale) {
+    const canvas = await h2c(captureRoot, buildHtml2CanvasOptions({
+      x: 0,
+      y: 0,
+      width: widthCss,
+      height: heightCss,
+      windowWidth: widthCss,
+      windowHeight: heightCss,
+      scrollX: 0,
+      scrollY: 0,
+      scale
+    }));
+    return assertCanvasUsable(canvas, 'html2canvas');
+  }
+
+  async function captureChunkedWithHtml2Canvas(h2c, target, options, metrics, onProgress, settleMs) {
     const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
     const chunks = [];
-
     for (let i = 0; i < positions.length; i++) {
       scrollToPosition(target, positions[i]);
-      await wait(options.delay);
+      await wait(settleMs);
       const rect = getCaptureRect(target);
-      const canvas = await h2c(document.documentElement, {
-        x: rect.left + scrollX, y: rect.top + scrollY,
-        width: rect.width, height: rect.height,
-        windowWidth: innerWidth, windowHeight: innerHeight,
-        scrollX: scrollX, scrollY: scrollY,
-        backgroundColor: '#ffffff', useCORS: true, allowTaint: false,
-        imageTimeout: 12000, scale: options.scale
-      });
+      const canvas = await h2c(document.documentElement, buildHtml2CanvasOptions({
+        x: rect.left + scrollX,
+        y: rect.top + scrollY,
+        width: rect.width,
+        height: rect.height,
+        windowWidth: innerWidth,
+        windowHeight: innerHeight,
+        scrollX: scrollX,
+        scrollY: scrollY,
+        scale: options.scale
+      }));
+      assertCanvasUsable(canvas, 'html2canvas');
       chunks.push({ canvas, pos: positions[i], cropTopCss: 0 });
-      onProgress(`截图中：${i + 1}/${positions.length}`);
+      onProgress(`html2canvas 分段：${i + 1}/${positions.length}`);
     }
     return chunks;
+  }
+
+  function isImageHeavyPage() {
+    let visible = 0;
+    for (const img of document.images) {
+      const r = img.getBoundingClientRect();
+      if (r.width >= 48 && r.height >= 48) visible += 1;
+      if (visible >= 12) return true;
+    }
+    return false;
+  }
+
+  /** DOM 主入口：按页面类型选择优先引擎，失败回退；超高页 html2canvas 分段 */
+  async function captureWithDom(target, options, metrics, onProgress) {
+    const restore = prepareDomCapture();
+    const settleMs = Math.max(50, Math.min(options.delay, 200));
+
+    try {
+      scrollToPosition(target, 0);
+      await wait(settleMs);
+
+      const live = getMetrics(target);
+      const widthCss = live.viewportWidth;
+      const heightCss = live.totalHeight;
+      metrics.totalHeight = heightCss;
+      metrics.viewportWidth = widthCss;
+      metrics.viewportHeight = live.viewportHeight;
+
+      const captureRoot = target.type === 'element' ? target.el : document.documentElement;
+      const preferredScale = options.scale;
+      const singleScale = maxDomScaleForSize(widthCss, heightCss, preferredScale);
+
+      // 1) 整页：图片重页优先 html2canvas；CSS 重页优先 modern-screenshot；失败互为回退
+      if (singleScale > 0) {
+        if (singleScale < preferredScale) {
+          onProgress(`页面较高，自动倍率 ${preferredScale}→${singleScale}`);
+        }
+
+        const preferHtml2Canvas = isImageHeavyPage();
+        const pipeline = preferHtml2Canvas
+          ? [
+              ['html2canvas', async () => {
+                const h2c = await loadHtml2Canvas();
+                return captureSingleWithHtml2Canvas(h2c, captureRoot, widthCss, heightCss, singleScale);
+              }],
+              ['modern-screenshot', async () => {
+                const domToCanvas = await loadModernScreenshot();
+                return captureSingleWithModern(domToCanvas, captureRoot, widthCss, heightCss, singleScale);
+              }]
+            ]
+          : [
+              ['modern-screenshot', async () => {
+                const domToCanvas = await loadModernScreenshot();
+                return captureSingleWithModern(domToCanvas, captureRoot, widthCss, heightCss, singleScale);
+              }],
+              ['html2canvas', async () => {
+                const h2c = await loadHtml2Canvas();
+                return captureSingleWithHtml2Canvas(h2c, captureRoot, widthCss, heightCss, singleScale);
+              }]
+            ];
+
+        let lastErr = null;
+        for (let i = 0; i < pipeline.length; i++) {
+          const [name, run] = pipeline[i];
+          try {
+            onProgress(i === 0
+              ? `DOM 整页渲染中（${name}${preferHtml2Canvas ? '，图片页优先' : ''}）…`
+              : `${pipeline[i - 1][0]} 失败，回退 ${name}…`);
+            const canvas = await run();
+            onProgress(`${name} 完成`);
+            return [{ canvas, pos: 0, cropTopCss: 0 }];
+          } catch (err) {
+            lastErr = err;
+            console.warn(`[工具箱] ${name} 失败:`, err);
+          }
+        }
+        throw lastErr || new Error('全部 DOM 引擎失败');
+      }
+
+      // 2) 超高：foreignObject 不便按视口裁切，走 html2canvas 分段
+      onProgress('页面过高，改用 html2canvas 分段…');
+      const h2c = await loadHtml2Canvas();
+      return await captureChunkedWithHtml2Canvas(h2c, target, options, metrics, onProgress, settleMs);
+    } finally {
+      restore();
+    }
+  }
+
+  // 兼容旧调用名
+  async function captureWithHtml2Canvas(target, options, metrics, onProgress) {
+    return captureWithDom(target, options, metrics, onProgress);
   }
 
   // ===========================================================================
@@ -1788,13 +2047,14 @@
     if (!chunks.length) throw new Error('没有可拼接的截图分段');
     const firstCanvas = chunks[0].canvas;
     const scale = firstCanvas.width / metrics.viewportWidth;
-    const stickyHeight = detectStickyHeaderHeight(chunks, scale);
+    // 整页单次渲染时无需吸顶裁剪
+    const stickyHeight = chunks.length === 1 && chunks[0].pos === 0
+      ? 0
+      : detectStickyHeaderHeight(chunks, scale);
 
     const finalWidthPx = firstCanvas.width;
     const finalHeightPx = Math.round(metrics.totalHeight * scale);
-    const maxCanvasHeight = 28000;
-    const maxCanvasPixels = 120000000;
-    const maxPartHeightPx = Math.floor(Math.min(maxCanvasHeight, maxCanvasPixels / finalWidthPx));
+    const maxPartHeightPx = Math.floor(Math.min(DOM_CAPTURE_MAX_HEIGHT, DOM_CAPTURE_MAX_PIXELS / finalWidthPx));
 
     if (finalHeightPx <= maxPartHeightPx) {
       const canvas = document.createElement('canvas');
@@ -1903,16 +2163,21 @@
     const target = getScrollTarget();
     const originalState = saveScrollState(target);
     setFabVisible(false);
+    const t0 = performance.now();
 
     try {
       onStatus('准备截图...');
-      await wait(300);
+      await wait(options.engine === 'dom' ? 80 : 300);
 
       const metrics = getMetrics(target);
       const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
       if (positions.length === 0) throw new Error('没有可截图内容');
 
-      onStatus(`目标：${describeTarget(target)}，共 ${positions.length} 段（${options.engine === 'screen' ? '真实捕获' : 'DOM 渲染'}）`);
+      const modeLabel = options.engine === 'screen' ? '真实捕获' : 'DOM（双引擎）';
+      const planLabel = options.engine === 'dom' && maxDomScaleForSize(metrics.viewportWidth, metrics.totalHeight, options.scale) > 0
+        ? '整页一次'
+        : `${positions.length} 段`;
+      onStatus(`目标：${describeTarget(target)}，${modeLabel}（${planLabel}）`);
       if (options.preload) {
         onStatus('预加载懒加载内容...');
         await preloadByScrolling(target, positions, options.delay);
@@ -1924,11 +2189,11 @@
         chunks = await captureWithDisplayMedia(target, options, metrics, onProgress);
         if (!chunks) {
           onStatus('真实截图不可用，回退到 DOM 渲染...');
-          chunks = await captureWithHtml2Canvas(target, options, metrics, onProgress);
+          chunks = await captureWithDom(target, options, metrics, onProgress);
         }
       } else {
         try {
-          chunks = await captureWithHtml2Canvas(target, options, metrics, onProgress);
+          chunks = await captureWithDom(target, options, metrics, onProgress);
         } catch (domErr) {
           console.warn('[工具箱] DOM 截图失败，尝试真实捕获:', domErr);
           onStatus(`DOM 渲染失败（${domErr?.message || domErr}），改用真实捕获…`);
@@ -1940,14 +2205,15 @@
       restoreScrollState(target, originalState);
       onStatus('正在拼接图片...');
       const result = await stitchAndExport(chunks, metrics, options, onProgress, copyMode);
+      const sec = ((performance.now() - t0) / 1000).toFixed(1);
       if (result.copied) {
         onStatus(result.stickyHeight > 0
-          ? `已复制到剪贴板。自动检测到 ${result.stickyHeight}px 吸顶栏并已裁剪。`
-          : '已复制到剪贴板。');
+          ? `已复制到剪贴板（${sec}s）。自动检测到 ${result.stickyHeight}px 吸顶栏并已裁剪。`
+          : `已复制到剪贴板（${sec}s）。`);
       } else {
         onStatus(result.stickyHeight > 0
-          ? `完成。自动检测到 ${result.stickyHeight}px 吸顶栏并已裁剪。`
-          : '完成。');
+          ? `完成（${sec}s）。自动检测到 ${result.stickyHeight}px 吸顶栏并已裁剪。`
+          : `完成（${sec}s）。`);
       }
     } catch (err) {
       console.error(err);
@@ -1970,8 +2236,10 @@
     if (engineRadio) setScreenshotEngine(engine);
     const preloadEl = document.getElementById('wt-preload');
     const preload = preloadEl ? !!preloadEl.checked : false;
+    // DOM 默认更短等待；真实捕获仍需较长 settle
+    const delayFallback = engine === 'screen' ? 350 : 120;
     return {
-      delay: clamp(get('wt-delay'), 100, 5000, 350),
+      delay: clamp(get('wt-delay'), 50, 5000, delayFallback),
       overlap: clamp(get('wt-overlap'), 0, 1000, 80),
       scale: clamp(get('wt-scale'), 0.5, 3, 1),
       engine: engine === 'screen' ? 'screen' : 'dom',
@@ -3048,7 +3316,7 @@
       status.className = 'wt-status';
       status.textContent = eng === 'screen'
         ? '真实捕获需浏览器授权：请选择「共享此标签页」。拒绝或失败时会自动回退到 DOM 渲染。'
-        : 'DOM 渲染模式无需屏幕共享授权，速度更快。复杂页面或跨域图片可改用真实捕获。';
+        : 'DOM 双引擎：图片重页优先 html2canvas-pro，其它页优先 modern-screenshot；失败自动互为回退。也可改用真实捕获。';
     };
 
     const engineDom = el('input', {
@@ -3086,7 +3354,7 @@
     card.appendChild(el('div', { class: 'wt-section' }, [
       el('p', { class: 'wt-section-title', text: '参数' }),
       el('div', { class: 'wt-opts' }, [
-        el('label', { class: 'wt-opt' }, ['等待 ms ', el('input', { id: 'wt-delay', type: 'number', value: '350', min: '100', step: '50' })]),
+        el('label', { class: 'wt-opt' }, ['等待 ms ', el('input', { id: 'wt-delay', type: 'number', value: '120', min: '50', step: '50' })]),
         el('label', { class: 'wt-opt' }, ['重叠 px ', el('input', { id: 'wt-overlap', type: 'number', value: '80', min: '0', step: '10' })]),
         el('label', { class: 'wt-opt' }, ['倍率 ', el('input', { id: 'wt-scale', type: 'number', value: '1', min: '0.5', max: '3', step: '0.5' })])
       ]),
@@ -3120,7 +3388,7 @@
     updateHint();
     card.appendChild(el('div', {
       class: 'wt-note',
-      text: '默认使用 DOM 渲染（html2canvas-pro，支持 ChatGPT 的 oklab 颜色），无需屏幕共享。需要像素级真实画面时再选真实捕获。超长页面自动分卷打包为 ZIP。自动检测并裁剪吸顶栏。悬浮钮可拖动，双击可贴边收起。'
+      text: 'DOM 双引擎：图片多的页面优先 html2canvas-pro（站酷等更快），其它优先 modern-screenshot（ChatGPT 等 CSS 页更快）；失败自动回退。超高页分段走 html2canvas。仍自动修复设计稿+transform 居中活动页。'
     }));
   }
 
