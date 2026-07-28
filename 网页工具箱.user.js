@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.1
+// @version      4.3.4
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（DOM 双引擎：modern-screenshot + html2canvas-pro 互为回退；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
@@ -743,23 +743,58 @@
   // ===========================================================================
   // 视频下载模块 - MP4 demux + mux（合并音视频）
   // ===========================================================================
+  function extractSampleDescription(file, trackId) {
+    const trak = file.moov?.traks?.find(t => t.tkhd?.track_id === trackId);
+    const entry = trak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
+    if (!entry) throw new Error('无法读取 sample description');
+    if (entry.avcC) {
+      const DS = globalThis.DataStream;
+      if (!DS) throw new Error('DataStream 不可用，无法提取 avcC');
+      const stream = new DS(undefined, 0, DS.BIG_ENDIAN);
+      entry.avcC.write(stream);
+      return new Uint8Array(stream.buffer, 8);
+    }
+    if (entry.esds) {
+      const specific = entry.esds.esd?.descs?.[0]?.descs?.[0];
+      const data = specific?.data;
+      if (!data) throw new Error('无法提取 AAC AudioSpecificConfig');
+      if (data instanceof ArrayBuffer) return new Uint8Array(data);
+      if (data.buffer) return new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength || data.length);
+      return new Uint8Array(data);
+    }
+    throw new Error('轨道缺少 avcC/esds 描述');
+  }
+
   function demuxMp4(arrayBuffer) {
     return new Promise((resolve, reject) => {
+      const MP4Box = globalThis.MP4Box || window.MP4Box;
+      if (!MP4Box?.createFile) {
+        reject(new Error('MP4Box 未加载'));
+        return;
+      }
       const file = MP4Box.createFile();
       const tracks = {};
       let videoTrackId = null, audioTrackId = null;
       let videoSamples = [], audioSamples = [];
+      let description = null;
 
       file.onError = (e) => reject(new Error('MP4 解析错误：' + e));
       file.onReady = (info) => {
-        for (const track of info.tracks) {
-          tracks[track.id] = track;
-          if (track.type === 'video') videoTrackId = track.id;
-          if (track.type === 'audio') audioTrackId = track.id;
+        try {
+          for (const track of info.tracks) {
+            tracks[track.id] = track;
+            if (track.type === 'video') videoTrackId = track.id;
+            if (track.type === 'audio') audioTrackId = track.id;
+          }
+          const id = videoTrackId !== null ? videoTrackId : audioTrackId;
+          if (id === null) throw new Error('未找到音视频轨道');
+          description = extractSampleDescription(file, id);
+          if (videoTrackId !== null) file.setExtractionOptions(videoTrackId);
+          if (audioTrackId !== null) file.setExtractionOptions(audioTrackId);
+          file.start();
+        } catch (e) {
+          reject(e);
         }
-        if (videoTrackId !== null) file.setExtractionOptions(videoTrackId);
-        if (audioTrackId !== null) file.setExtractionOptions(audioTrackId);
-        file.start();
       };
       file.onSamples = (trackId, user, samples) => {
         if (trackId === videoTrackId) videoSamples = videoSamples.concat(samples);
@@ -769,18 +804,17 @@
       try {
         const buf = arrayBuffer.buffer ? arrayBuffer.buffer.slice(0) : arrayBuffer.slice(0);
         buf.fileStart = 0;
-        const stop = file.appendBuffer(buf);
-        if (stop) file.flush();
+        file.appendBuffer(buf);
+        file.flush();
 
         const result = () => ({
           videoTrack: videoTrackId !== null ? tracks[videoTrackId] : null,
           audioTrack: audioTrackId !== null ? tracks[audioTrackId] : null,
           videoSamples,
           audioSamples,
+          description,
         });
 
-        // onSamples 通常在 appendBuffer/flush 期间同步触发
-        // 若已收到 samples 则立即 resolve，否则短暂等待异步回调
         if (videoSamples.length > 0 || audioSamples.length > 0) {
           resolve(result());
         } else {
@@ -790,24 +824,38 @@
     });
   }
 
+  function samplesToEncodedChunks(samples, track, kind) {
+    const timescale = track.timescale || (kind === 'video' ? 90000 : 48000);
+    const Chunk = kind === 'video' ? EncodedVideoChunk : EncodedAudioChunk;
+    // mp4-muxer：chunk.timestamp = 呈现时间(CTS)，compositionTimeOffset = CTS-DTS，内部 DTS = CTS-CTO
+    // B站视频有 B 帧，必须带 CTO，否则会报 Timestamps must be monotonically increasing
+    return samples.map(s => {
+      const dts = s.dts ?? s.cts ?? 0;
+      const cts = s.cts ?? dts;
+      return {
+        chunk: new Chunk({
+          type: s.is_sync ? 'key' : 'delta',
+          timestamp: Math.round(cts * 1e6 / timescale),
+          duration: Math.max(0, Math.round(s.duration * 1e6 / timescale)),
+          data: s.data || new Uint8Array(0),
+        }),
+        compositionTimeOffset: Math.round((cts - dts) * 1e6 / timescale),
+      };
+    });
+  }
+
   function samplesToVideoChunks(samples, track) {
-    const timescale = track.timescale || 90000;
-    return samples.map(s => new EncodedVideoChunk({
-      type: s.is_sync ? 'key' : 'delta',
-      timestamp: Math.round(s.cts * 1e6 / timescale),
-      duration: Math.round(s.duration * 1e6 / timescale),
-      data: s.data || new Uint8Array(0),
-    }));
+    return samplesToEncodedChunks(samples, track, 'video');
   }
 
   function samplesToAudioChunks(samples, track) {
-    const timescale = track.timescale || 48000;
-    return samples.map(s => new EncodedAudioChunk({
-      type: s.is_sync ? 'key' : 'delta',
-      timestamp: Math.round(s.cts * 1e6 / timescale),
-      duration: Math.round(s.duration * 1e6 / timescale),
-      data: s.data || new Uint8Array(0),
-    }));
+    return samplesToEncodedChunks(samples, track, 'audio');
+  }
+
+  function getMp4Muxer() {
+    const lib = globalThis.mp4Muxer || globalThis.Mp4Muxer || window.mp4Muxer || window.Mp4Muxer;
+    if (!lib || typeof lib.Muxer !== 'function') throw new Error('mp4-muxer 未加载');
+    return lib;
   }
 
   function parseAvcConfig(track) {
@@ -820,8 +868,13 @@
 
   async function mergeVideoAudio(videoBuffer, audioBuffer) {
     await ensureMp4Libs();
+    const mp4Muxer = getMp4Muxer();
     const vDemux = await demuxMp4(videoBuffer);
     const aDemux = await demuxMp4(audioBuffer);
+    if (!vDemux.videoTrack) throw new Error('无法解析视频轨');
+    if (!aDemux.audioTrack) throw new Error('无法解析音频轨');
+    if (!vDemux.description) throw new Error('无法提取视频 decoder description');
+    if (!aDemux.description) throw new Error('无法提取音频 decoder description');
     const vConfig = parseAvcConfig(vDemux.videoTrack);
     const aConfig = parseAacConfig(aDemux.audioTrack);
 
@@ -830,18 +883,37 @@
       video: vConfig,
       audio: aConfig,
       fastStart: 'in-memory',
+      // B站首帧时间戳常非 0（报错 received DTS=0.1）
+      firstTimestampBehavior: 'offset',
     });
 
-    if (vDemux.videoSamples.length > 0) {
-      for (const chunk of samplesToVideoChunks(vDemux.videoSamples, vDemux.videoTrack)) {
-        muxer.addVideoChunk(chunk, {});
-      }
-    }
-    if (aDemux.audioSamples.length > 0) {
-      for (const chunk of samplesToAudioChunks(aDemux.audioSamples, aDemux.audioTrack)) {
-        muxer.addAudioChunk(chunk, {});
-      }
-    }
+    const colorSpace = { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false };
+    const vChunks = samplesToVideoChunks(vDemux.videoSamples, vDemux.videoTrack);
+    const aChunks = samplesToAudioChunks(aDemux.audioSamples, aDemux.audioTrack);
+
+    vChunks.forEach(({ chunk, compositionTimeOffset }, i) => {
+      const meta = i === 0 ? {
+        decoderConfig: {
+          codec: vDemux.videoTrack.codec || 'avc1.64001f',
+          codedWidth: vConfig.width,
+          codedHeight: vConfig.height,
+          description: vDemux.description,
+          colorSpace,
+        },
+      } : undefined;
+      muxer.addVideoChunk(chunk, meta, undefined, compositionTimeOffset);
+    });
+    aChunks.forEach(({ chunk, compositionTimeOffset }, i) => {
+      const meta = i === 0 ? {
+        decoderConfig: {
+          codec: aDemux.audioTrack.codec || 'mp4a.40.2',
+          sampleRate: aConfig.sampleRate,
+          numberOfChannels: aConfig.numberOfChannels,
+          description: aDemux.description,
+        },
+      } : undefined;
+      muxer.addAudioChunk(chunk, meta, undefined, compositionTimeOffset);
+    });
     muxer.finalize();
     return muxer.target.buffer;
   }
@@ -864,8 +936,9 @@
     ctx.fillRect(0, 0, width, height);
 
     let videoChunk = null;
+    let videoMeta = null;
     const encoder = new VideoEncoder({
-      output: (chunk) => { videoChunk = chunk; },
+      output: (chunk, meta) => { videoChunk = chunk; if (meta) videoMeta = meta; },
       error: () => {},
     });
     encoder.configure({ codec: 'avc1.42c01e', width, height, bitrate: 100000, framerate: 1 });
@@ -878,18 +951,42 @@
     if (!videoChunk) throw new Error('黑屏视频编码失败');
 
     // 合并黑屏视频 + 音频
+    const mp4Muxer = getMp4Muxer();
     const muxer = new mp4Muxer.Muxer({
       target: new mp4Muxer.ArrayBufferTarget(),
       video: { codec: 'avc', width, height },
       audio: aConfig,
       fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
     });
 
-    muxer.addVideoChunk(videoChunk, {});
+    const colorSpace = { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false };
+    const firstVideoMeta = videoMeta || {
+      decoderConfig: {
+        codec: 'avc1.42c01e',
+        codedWidth: width,
+        codedHeight: height,
+        colorSpace,
+      },
+    };
+    if (firstVideoMeta.decoderConfig && !firstVideoMeta.decoderConfig.colorSpace) {
+      firstVideoMeta.decoderConfig.colorSpace = colorSpace;
+    }
+    muxer.addVideoChunk(videoChunk, firstVideoMeta);
+
     if (aDemux.audioSamples.length > 0) {
-      for (const chunk of samplesToAudioChunks(aDemux.audioSamples, aDemux.audioTrack)) {
-        muxer.addAudioChunk(chunk, {});
-      }
+      const aChunks = samplesToAudioChunks(aDemux.audioSamples, aDemux.audioTrack);
+      aChunks.forEach(({ chunk, compositionTimeOffset }, i) => {
+        const meta = i === 0 ? {
+          decoderConfig: {
+            codec: aDemux.audioTrack.codec || 'mp4a.40.2',
+            sampleRate: aConfig.sampleRate,
+            numberOfChannels: aConfig.numberOfChannels,
+            description: aDemux.description,
+          },
+        } : undefined;
+        muxer.addAudioChunk(chunk, meta, undefined, compositionTimeOffset);
+      });
     }
     muxer.finalize();
     return muxer.target.buffer;
@@ -1493,6 +1590,10 @@
           || (this && this.${globalName})
           || module.exports;
         if (__lib && typeof __lib === 'object' && __lib.default) __lib = __lib.default;
+        // mp4box 需要 DataStream 才能写出 avcC description
+        if (typeof DataStream !== 'undefined') {
+          try { globalThis.DataStream = DataStream; } catch {}
+        }
         return __lib;
       `);
       const fromSandbox = runner.call(globalThis);
