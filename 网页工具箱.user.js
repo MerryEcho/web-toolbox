@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.6
+// @version      4.3.7
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（DOM 双引擎：modern-screenshot + html2canvas-pro 互为回退；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
@@ -1944,6 +1944,14 @@
       || /(^|\.)feishu\.cn$/i.test(h);
   }
 
+  /** overflow 滚动容器 / App Shell：禁止按 scrollHeight 整页一次截（只会画出首屏，下面全白） */
+  function shouldForceChunkedDomCapture(target, metrics) {
+    if (!metrics) return false;
+    if (target?.type === 'element' && metrics.totalHeight > metrics.viewportHeight + 80) return true;
+    if (isAppShellDocumentHost() && metrics.totalHeight > metrics.viewportHeight + 80) return true;
+    return false;
+  }
+
   function prepareDomCapture() {
     const restores = [];
     const skipViewportUnlock = isAppShellDocumentHost();
@@ -2114,7 +2122,7 @@
     return false;
   }
 
-  /** DOM 主入口：按页面类型选择优先引擎，失败回退；超高页 html2canvas 分段 */
+  /** DOM 主入口：按页面类型选择优先引擎，失败回退；超高页 / 内部滚动容器走分段 */
   async function captureWithDom(target, options, metrics, onProgress) {
     const restore = prepareDomCapture();
     const settleMs = Math.max(50, Math.min(options.delay, 200));
@@ -2133,9 +2141,10 @@
       const captureRoot = target.type === 'element' ? target.el : document.documentElement;
       const preferredScale = options.scale;
       const singleScale = maxDomScaleForSize(widthCss, heightCss, preferredScale);
+      const forceChunked = shouldForceChunkedDomCapture(target, live);
 
-      // 1) 整页：图片重页优先 html2canvas；CSS 重页优先 modern-screenshot；失败互为回退
-      if (singleScale > 0) {
+      // 1) 整页一次：仅当不是内部滚动长页（否则会首屏有内容、下面空白）
+      if (singleScale > 0 && !forceChunked) {
         if (singleScale < preferredScale) {
           onProgress(`页面较高，自动倍率 ${preferredScale}→${singleScale}`);
         }
@@ -2181,8 +2190,10 @@
         throw lastErr || new Error('全部 DOM 引擎失败');
       }
 
-      // 2) 超高：foreignObject 不便按视口裁切，走 html2canvas 分段
-      onProgress('页面过高，改用 html2canvas 分段…');
+      // 2) 分段：飞书等内部滚动容器、或超高页
+      onProgress(forceChunked
+        ? `检测到内部滚动容器（${Math.round(heightCss)}px），改用分段截图…`
+        : '页面过高，改用 html2canvas 分段…');
       const h2c = await loadHtml2Canvas();
       return await captureChunkedWithHtml2Canvas(h2c, target, options, metrics, onProgress, settleMs);
     } finally {
@@ -2361,11 +2372,12 @@
       if (positions.length === 0) throw new Error('没有可截图内容');
 
       const modeLabel = options.engine === 'screen' ? '真实捕获' : 'DOM（双引擎）';
-      const planLabel = options.engine === 'dom' && maxDomScaleForSize(metrics.viewportWidth, metrics.totalHeight, options.scale) > 0
-        ? '整页一次'
-        : `${positions.length} 段`;
+      const canSingle = options.engine === 'dom'
+        && maxDomScaleForSize(metrics.viewportWidth, metrics.totalHeight, options.scale) > 0
+        && !shouldForceChunkedDomCapture(target, metrics);
+      const planLabel = canSingle ? '整页一次' : `${positions.length} 段`;
       onStatus(`目标：${describeTarget(target)}，${modeLabel}（${planLabel}）`);
-      if (options.preload) {
+      if (options.preload || (options.engine === 'dom' && shouldForceChunkedDomCapture(target, metrics))) {
         onStatus('预加载懒加载内容...');
         await preloadByScrolling(target, positions, options.delay);
       }
