@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.4
+// @version      4.3.5
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（DOM 双引擎：modern-screenshot + html2canvas-pro 互为回退；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
@@ -743,16 +743,63 @@
   // ===========================================================================
   // 视频下载模块 - MP4 demux + mux（合并音视频）
   // ===========================================================================
+  function concatUint8(parts) {
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  }
+
+  function naluToUint8(entry) {
+    const raw = entry?.nalu || entry?.data || entry;
+    if (!raw) return null;
+    if (raw instanceof Uint8Array) return raw;
+    if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+    if (raw.buffer) return new Uint8Array(raw.buffer, raw.byteOffset || 0, raw.byteLength || raw.length);
+    return null;
+  }
+
+  // 不依赖 DataStream：从 mp4box 的 avcC 对象手写 AVCDecoderConfigurationRecord
+  function buildAvcDecoderConfig(avcC) {
+    const spsList = (avcC.SPS || []).map(naluToUint8).filter(Boolean);
+    const ppsList = (avcC.PPS || []).map(naluToUint8).filter(Boolean);
+    if (!spsList.length || !ppsList.length) throw new Error('avcC 缺少 SPS/PPS');
+    const parts = [
+      Uint8Array.of(
+        avcC.configurationVersion || 1,
+        avcC.AVCProfileIndication || 0,
+        avcC.profile_compatibility || 0,
+        avcC.AVCLevelIndication || 0,
+        0xFC | ((avcC.lengthSizeMinusOne ?? 3) & 0x03),
+        0xE0 | (spsList.length & 0x1F),
+      ),
+    ];
+    for (const sps of spsList) {
+      parts.push(Uint8Array.of((sps.length >> 8) & 0xFF, sps.length & 0xFF), sps);
+    }
+    parts.push(Uint8Array.of(ppsList.length & 0xFF));
+    for (const pps of ppsList) {
+      parts.push(Uint8Array.of((pps.length >> 8) & 0xFF, pps.length & 0xFF), pps);
+    }
+    return concatUint8(parts);
+  }
+
   function extractSampleDescription(file, trackId) {
     const trak = file.moov?.traks?.find(t => t.tkhd?.track_id === trackId);
     const entry = trak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
     if (!entry) throw new Error('无法读取 sample description');
     if (entry.avcC) {
-      const DS = globalThis.DataStream;
-      if (!DS) throw new Error('DataStream 不可用，无法提取 avcC');
-      const stream = new DS(undefined, 0, DS.BIG_ENDIAN);
-      entry.avcC.write(stream);
-      return new Uint8Array(stream.buffer, 8);
+      // 优先手写 avcC，避免 Tampermonkey 沙箱里 DataStream 丢失
+      try {
+        return buildAvcDecoderConfig(entry.avcC);
+      } catch (manualErr) {
+        const DS = globalThis.DataStream || window.DataStream || uw.DataStream;
+        if (!DS) throw new Error(`无法提取 avcC：${manualErr.message || manualErr}`);
+        const stream = new DS(undefined, 0, DS.BIG_ENDIAN);
+        entry.avcC.write(stream);
+        return new Uint8Array(stream.buffer, 8);
+      }
     }
     if (entry.esds) {
       const specific = entry.esds.esd?.descs?.[0]?.descs?.[0];
