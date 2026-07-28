@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.5
+// @version      4.3.6
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（DOM 双引擎：modern-screenshot + html2canvas-pro 互为回退；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
@@ -1933,9 +1933,20 @@
    * 截图前预处理：放开 html/body 高度、取消 sticky，并把「纯位移 transform」
    * 烘焙成 left/top（站酷摘要等设计稿居中活动页；对 html2canvas 必需，对
    * modern-screenshot 也更稳）。
+   *
+   * 注意：飞书/Lark/Notion 等 App Shell 依赖 html/body 的固定视口 + overflow，
+   * 强行 height:auto / overflow:visible 会把主内容区打成白屏（仅剩水印）。
    */
+  function isAppShellDocumentHost(hostname = location.hostname) {
+    const h = String(hostname || '').toLowerCase();
+    return /(^|\.)(larkoffice|feishu|larksuite|notion\.site|notion\.so|docs\.google)\.com$/i.test(h)
+      || /\.feishu\.cn$/i.test(h)
+      || /(^|\.)feishu\.cn$/i.test(h);
+  }
+
   function prepareDomCapture() {
     const restores = [];
+    const skipViewportUnlock = isAppShellDocumentHost();
 
     const saveStyle = (el) => {
       const prev = el.getAttribute('style');
@@ -1945,14 +1956,16 @@
       });
     };
 
-    for (const el of [document.documentElement, document.body]) {
-      if (!el) continue;
-      saveStyle(el);
-      el.style.setProperty('height', 'auto', 'important');
-      el.style.setProperty('max-height', 'none', 'important');
-      el.style.setProperty('overflow', 'visible', 'important');
-      el.style.setProperty('overflow-x', 'visible', 'important');
-      el.style.setProperty('overflow-y', 'visible', 'important');
+    if (!skipViewportUnlock) {
+      for (const el of [document.documentElement, document.body]) {
+        if (!el) continue;
+        saveStyle(el);
+        el.style.setProperty('height', 'auto', 'important');
+        el.style.setProperty('max-height', 'none', 'important');
+        el.style.setProperty('overflow', 'visible', 'important');
+        el.style.setProperty('overflow-x', 'visible', 'important');
+        el.style.setProperty('overflow-y', 'visible', 'important');
+      }
     }
 
     const nodes = Array.from(document.querySelectorAll('body *'));
@@ -1967,6 +1980,9 @@
         el.style.setProperty('bottom', 'auto', 'important');
         continue;
       }
+
+      // App Shell 页的 transform 常用于侧栏/虚拟滚动，烘焙会破坏布局
+      if (skipViewportUnlock) continue;
 
       if (!st.transform || st.transform === 'none') continue;
       let m;
