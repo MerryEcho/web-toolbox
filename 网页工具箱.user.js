@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.0
+// @version      4.3.1
 // @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（DOM 双引擎：modern-screenshot + html2canvas-pro 互为回退；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
@@ -11,6 +11,8 @@
 // @resource     modernScreenshot https://cdn.jsdelivr.net/npm/modern-screenshot@4.7.0/dist/index.js
 // @resource     html2canvas https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.11/dist/html2canvas-pro.min.js
 // @resource     jszip https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
+// @resource     mp4box https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js
+// @resource     mp4muxer https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.js
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
@@ -572,13 +574,34 @@
   }
 
   async function ensureMp4Libs() {
+    // 路径注意：mp4box 包内是 dist/mp4box.all(.min).js；mp4-muxer 包内是 build/mp4-muxer.js（不是 dist/*.min.js）
+    // 全局名注意：mp4-muxer UMD 导出为 Mp4Muxer（不是 mp4Muxer）
     if (!libStatus.mp4box) {
-      await loadScriptBlob('https://cdn.jsdelivr.net/npm/mp4box@0.5.0/dist/mp4box.min.js');
-      libStatus.mp4box = !!(window.MP4Box || globalThis.MP4Box);
+      const lib = await loadLibrary(
+        'https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js',
+        'MP4Box',
+        'mp4box'
+      );
+      if (!lib || typeof lib.createFile !== 'function') throw new Error('MP4Box 加载失败');
+      try { globalThis.MP4Box = lib; window.MP4Box = lib; uw.MP4Box = lib; } catch {}
+      libStatus.mp4box = true;
     }
     if (!libStatus.mp4muxer) {
-      await loadScriptBlob('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.0/dist/mp4-muxer.min.js');
-      libStatus.mp4muxer = !!(window.mp4Muxer || globalThis.mp4Muxer);
+      const lib = await loadLibrary(
+        'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.js',
+        'Mp4Muxer',
+        'mp4muxer'
+      );
+      if (!lib || typeof lib.Muxer !== 'function') throw new Error('mp4-muxer 加载失败');
+      try {
+        globalThis.Mp4Muxer = lib;
+        globalThis.mp4Muxer = lib; // 兼容旧引用
+        window.Mp4Muxer = lib;
+        window.mp4Muxer = lib;
+        uw.Mp4Muxer = lib;
+        uw.mp4Muxer = lib;
+      } catch {}
+      libStatus.mp4muxer = true;
     }
   }
 
