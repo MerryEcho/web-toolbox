@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.7
-// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（DOM 双引擎：modern-screenshot + html2canvas-pro 互为回退；可选 getDisplayMedia 真实捕获）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
+// @version      4.3.8
+// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（普通页 DOM 双引擎；飞书/Notion 等长文自动真实捕获以达十秒级）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
 // @supportURL   https://github.com/MerryEcho/web-toolbox/issues
@@ -1823,8 +1823,34 @@
   // ===========================================================================
   // 长截图模块 - getDisplayMedia 真实截图
   // ===========================================================================
+  /** 飞书/Notion 等虚拟滚动长文：DOM 分段要分钟级，必须走真实捕获才能到十秒内 */
+  function shouldAutoUseScreenCapture(target, metrics) {
+    if (!isAppShellDocumentHost()) return false;
+    if (!shouldForceChunkedDomCapture(target, metrics)) return false;
+    return metrics.totalHeight > metrics.viewportHeight * 2.5;
+  }
+
+  function waitVideoFrame(video) {
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      return new Promise((resolve) => {
+        const timer = setTimeout(resolve, 120);
+        video.requestVideoFrameCallback(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+    return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
+
   async function captureWithDisplayMedia(target, options, metrics, onProgress) {
     if (!uw.navigator?.mediaDevices?.getDisplayMedia) return null;
+
+    const captureRoot = target.type === 'element' ? target.el : document.documentElement;
+    const restoreChrome = isAppShellDocumentHost() ? softHideAppShellChrome(captureRoot) : () => {};
+    // App Shell：帧抓取本身很快，settle 过长会线性拖死总时长
+    const settleMs = Math.max(30, Math.min(options.delay, isAppShellDocumentHost() ? 60 : options.delay));
+    const overlap = isAppShellDocumentHost() && options.overlap > 40 ? 40 : options.overlap;
 
     let stream;
     try {
@@ -1843,7 +1869,10 @@
       const getStream = uw.navigator.mediaDevices.getDisplayMedia(constraints);
       const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('用户未响应屏幕共享请求')), 120000));
       stream = await Promise.race([getStream, timeout]);
-    } catch { return null; }
+    } catch {
+      restoreChrome();
+      return null;
+    }
 
     const video = el('video', { muted: true, playsinline: '' });
     video.style.cssText = 'position:fixed;top:-9999px;left:-9999px;pointer-events:none;z-index:-1;';
@@ -1856,25 +1885,26 @@
         video.onloadedmetadata = () => { clearTimeout(timer); resolve(); };
       });
       await video.play();
-      await wait(150);
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await waitVideoFrame(video);
 
-      const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
+      const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, overlap);
       const streamW = video.videoWidth;
       const streamH = video.videoHeight;
+      if (!streamW || !streamH) throw new Error('屏幕共享视频尺寸无效');
       const cssToStreamX = streamW / innerWidth;
       const cssToStreamY = streamH / innerHeight;
       const chunks = [];
 
       for (let i = 0; i < positions.length; i++) {
         scrollToPosition(target, positions[i]);
-        await wait(options.delay);
+        await wait(settleMs);
+        await waitVideoFrame(video);
 
         const rect = getCaptureRect(target);
         const sx = Math.round(rect.left * cssToStreamX);
         const sy = Math.round(rect.top * cssToStreamY);
-        const sw = Math.round(rect.width * cssToStreamX);
-        const sh = Math.round(rect.height * cssToStreamY);
+        const sw = Math.max(1, Math.round(rect.width * cssToStreamX));
+        const sh = Math.max(1, Math.round(rect.height * cssToStreamY));
 
         const canvas = document.createElement('canvas');
         canvas.width = sw;
@@ -1887,8 +1917,9 @@
 
       return chunks;
     } finally {
-      stream.getTracks().forEach(t => t.stop());
-      video.remove();
+      try { stream.getTracks().forEach(t => t.stop()); } catch {}
+      try { video.remove(); } catch {}
+      restoreChrome();
     }
   }
 
@@ -1906,6 +1937,64 @@
     return id === BUTTON_ID || id === PANEL_ID || id === APP_ID
       || id === 'h2c-debug'
       || (typeof el.closest === 'function' && !!el.closest(`#${PANEL_ID}, #${BUTTON_ID}`));
+  }
+
+  /**
+   * 分段截图时跳过 body 内与捕获根无关的壳层（侧栏/导航等），保留 head 样式与祖先链。
+   * 注意：不能忽略 head，否则飞书等页会渲成白屏。
+   */
+  function buildChunkedIgnoreElements(captureRoot) {
+    return (node) => {
+      if (isToolboxChrome(node)) return true;
+      if (!node || node.nodeType !== 1) return false;
+      if (!captureRoot || captureRoot === document.documentElement || captureRoot === document.body) {
+        return false;
+      }
+      if (node === captureRoot || captureRoot.contains(node)) return false;
+      if (node === document.documentElement || node === document.body || node === document.head) return false;
+      if (document.head.contains(node)) return false;
+      if (typeof node.contains === 'function' && node.contains(captureRoot)) return false;
+      if (!document.body.contains(node)) return false;
+      const tag = node.tagName;
+      if (tag === 'STYLE' || tag === 'LINK') return false;
+      return true;
+    };
+  }
+
+  /** App Shell 分段时临时藏导航/目录/评论等壳层，降低 html2canvas 克隆成本 */
+  function softHideAppShellChrome(captureRoot) {
+    const restores = [];
+    const selectors = [
+      '.navigation-bar-wrapper',
+      '[class*="catalogue"]',
+      '[class*="sidebar"]',
+      '[class*="comment"]',
+      '[class*="toolbar"]'
+    ];
+    for (const sel of selectors) {
+      for (const node of document.querySelectorAll(sel)) {
+        if (!node || node === captureRoot) continue;
+        if (captureRoot && typeof captureRoot.contains === 'function' && captureRoot.contains(node)) {
+          const r = node.getBoundingClientRect();
+          // 目录等窄侧栏可藏；占内容区大半的节点别动
+          if (r.width > (captureRoot.clientWidth || innerWidth) * 0.55) continue;
+        } else if (captureRoot && typeof node.contains === 'function' && node.contains(captureRoot)) {
+          continue;
+        }
+        const prev = node.style.getPropertyValue('visibility');
+        const pri = node.style.getPropertyPriority('visibility');
+        node.style.setProperty('visibility', 'hidden', 'important');
+        restores.push(() => {
+          if (!prev) node.style.removeProperty('visibility');
+          else node.style.setProperty('visibility', prev, pri || '');
+        });
+      }
+    }
+    return () => {
+      for (let i = restores.length - 1; i >= 0; i--) {
+        try { restores[i](); } catch {}
+      }
+    };
   }
 
   function canDomSingleShot(widthCss, heightCss, scale) {
@@ -2089,27 +2178,47 @@
 
   async function captureChunkedWithHtml2Canvas(h2c, target, options, metrics, onProgress, settleMs) {
     const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
-    const chunks = [];
-    for (let i = 0; i < positions.length; i++) {
-      scrollToPosition(target, positions[i]);
-      await wait(settleMs);
-      const rect = getCaptureRect(target);
-      const canvas = await h2c(document.documentElement, buildHtml2CanvasOptions({
-        x: rect.left + scrollX,
-        y: rect.top + scrollY,
-        width: rect.width,
-        height: rect.height,
-        windowWidth: innerWidth,
-        windowHeight: innerHeight,
-        scrollX: scrollX,
-        scrollY: scrollY,
-        scale: options.scale
-      }));
-      assertCanvasUsable(canvas, 'html2canvas');
-      chunks.push({ canvas, pos: positions[i], cropTopCss: 0 });
-      onProgress(`html2canvas 分段：${i + 1}/${positions.length}`);
+    const captureRoot = target.type === 'element' ? target.el : document.documentElement;
+    const ignoreElements = buildChunkedIgnoreElements(captureRoot);
+    const restoreChrome = isAppShellDocumentHost() ? softHideAppShellChrome(captureRoot) : () => {};
+
+    // 分段次数多时略降倍率：克隆成本占主导，0.75 对可读性影响小、总时长明显下降
+    let scale = options.scale;
+    if (positions.length >= 10 && scale > 0.75) {
+      onProgress(`分段较多（${positions.length}），自动倍率 ${scale}→0.75 以加速`);
+      scale = 0.75;
+    } else if (positions.length >= 14 && scale > 0.65) {
+      onProgress(`超长内滚页（${positions.length} 段），自动倍率 ${scale}→0.65 以加速`);
+      scale = 0.65;
     }
-    return chunks;
+
+    const chunks = [];
+    try {
+      for (let i = 0; i < positions.length; i++) {
+        scrollToPosition(target, positions[i]);
+        await wait(settleMs);
+        const rect = getCaptureRect(target);
+        const canvas = await h2c(document.documentElement, buildHtml2CanvasOptions({
+          x: rect.left + scrollX,
+          y: rect.top + scrollY,
+          width: rect.width,
+          height: rect.height,
+          windowWidth: innerWidth,
+          windowHeight: innerHeight,
+          scrollX: scrollX,
+          scrollY: scrollY,
+          scale,
+          imageTimeout: 0,
+          ignoreElements
+        }));
+        assertCanvasUsable(canvas, 'html2canvas');
+        chunks.push({ canvas, pos: positions[i], cropTopCss: 0 });
+        onProgress(`html2canvas 分段：${i + 1}/${positions.length}`);
+      }
+      return chunks;
+    } finally {
+      restoreChrome();
+    }
   }
 
   function isImageHeavyPage() {
@@ -2125,7 +2234,10 @@
   /** DOM 主入口：按页面类型选择优先引擎，失败回退；超高页 / 内部滚动容器走分段 */
   async function captureWithDom(target, options, metrics, onProgress) {
     const restore = prepareDomCapture();
-    const settleMs = Math.max(50, Math.min(options.delay, 200));
+    // App Shell 内滚分段：等待过长几乎不增加完整度，反而线性拖慢总时长
+    const settleMs = (isAppShellDocumentHost() && shouldForceChunkedDomCapture(target, metrics))
+      ? Math.max(30, Math.min(options.delay, 80))
+      : Math.max(50, Math.min(options.delay, 200));
 
     try {
       scrollToPosition(target, 0);
@@ -2192,10 +2304,15 @@
 
       // 2) 分段：飞书等内部滚动容器、或超高页
       onProgress(forceChunked
-        ? `检测到内部滚动容器（${Math.round(heightCss)}px），改用分段截图…`
+        ? `检测到内部滚动容器（${Math.round(heightCss)}px），改用加速分段截图…`
         : '页面过高，改用 html2canvas 分段…');
       const h2c = await loadHtml2Canvas();
-      return await captureChunkedWithHtml2Canvas(h2c, target, options, metrics, onProgress, settleMs);
+      // 分段路径使用略降后的 scale（captureChunked 内还会按段数再调）
+      const chunkOptions = { ...options };
+      if (forceChunked && isAppShellDocumentHost() && chunkOptions.overlap > 40) {
+        chunkOptions.overlap = 40;
+      }
+      return await captureChunkedWithHtml2Canvas(h2c, target, chunkOptions, metrics, onProgress, settleMs);
     } finally {
       restore();
     }
@@ -2365,29 +2482,44 @@
 
     try {
       onStatus('准备截图...');
-      await wait(options.engine === 'dom' ? 80 : 300);
+      await wait(80);
 
       const metrics = getMetrics(target);
-      const positions = buildScrollPositions(metrics.totalHeight, metrics.viewportHeight, options.overlap);
+      const autoScreen = shouldAutoUseScreenCapture(target, metrics);
+      const useScreen = options.engine === 'screen' || autoScreen;
+      // 飞书类长文：强制短 settle，否则即使用真实捕获也会被默认 350ms×N 段拖慢
+      const captureOptions = autoScreen || (useScreen && isAppShellDocumentHost())
+        ? { ...options, delay: Math.min(options.delay, 50), overlap: Math.min(options.overlap, 40), engine: 'screen' }
+        : options;
+      const positions = buildScrollPositions(
+        metrics.totalHeight,
+        metrics.viewportHeight,
+        captureOptions.overlap
+      );
       if (positions.length === 0) throw new Error('没有可截图内容');
 
-      const modeLabel = options.engine === 'screen' ? '真实捕获' : 'DOM（双引擎）';
-      const canSingle = options.engine === 'dom'
+      const modeLabel = useScreen ? '真实捕获' : 'DOM（双引擎）';
+      const canSingle = !useScreen
         && maxDomScaleForSize(metrics.viewportWidth, metrics.totalHeight, options.scale) > 0
         && !shouldForceChunkedDomCapture(target, metrics);
       const planLabel = canSingle ? '整页一次' : `${positions.length} 段`;
       onStatus(`目标：${describeTarget(target)}，${modeLabel}（${planLabel}）`);
-      if (options.preload || (options.engine === 'dom' && shouldForceChunkedDomCapture(target, metrics))) {
+      if (autoScreen && options.engine !== 'screen') {
+        onStatus('飞书类长文 DOM 需约 1 分钟，已自动改用真实捕获（请选「此标签页」，授权后数秒完成）…');
+      }
+      if (options.preload && !useScreen) {
         onStatus('预加载懒加载内容...');
         await preloadByScrolling(target, positions, options.delay);
       }
 
       let chunks = null;
-      if (options.engine === 'screen') {
+      if (useScreen) {
         onStatus('请求屏幕共享（请选择「此标签页」）...');
-        chunks = await captureWithDisplayMedia(target, options, metrics, onProgress);
+        chunks = await captureWithDisplayMedia(target, captureOptions, metrics, onProgress);
         if (!chunks) {
-          onStatus('真实截图不可用，回退到 DOM 渲染...');
+          onStatus(autoScreen
+            ? '未授权真实捕获。DOM 回退会很慢（约 1 分钟），仍继续…'
+            : '真实截图不可用，回退到 DOM 渲染...');
           chunks = await captureWithDom(target, options, metrics, onProgress);
         }
       } else {
@@ -2396,7 +2528,7 @@
         } catch (domErr) {
           console.warn('[工具箱] DOM 截图失败，尝试真实捕获:', domErr);
           onStatus(`DOM 渲染失败（${domErr?.message || domErr}），改用真实捕获…`);
-          chunks = await captureWithDisplayMedia(target, options, metrics, onProgress);
+          chunks = await captureWithDisplayMedia(target, captureOptions, metrics, onProgress);
           if (!chunks) throw domErr;
         }
       }
@@ -2435,8 +2567,8 @@
     if (engineRadio) setScreenshotEngine(engine);
     const preloadEl = document.getElementById('wt-preload');
     const preload = preloadEl ? !!preloadEl.checked : false;
-    // DOM 默认更短等待；真实捕获仍需较长 settle
-    const delayFallback = engine === 'screen' ? 350 : 120;
+    // DOM 默认短等待；真实捕获默认 80ms（飞书长文还会再压到 ≤50ms）
+    const delayFallback = engine === 'screen' ? 80 : 120;
     return {
       delay: clamp(get('wt-delay'), 50, 5000, delayFallback),
       overlap: clamp(get('wt-overlap'), 0, 1000, 80),
@@ -3513,9 +3645,13 @@
       const eng = document.querySelector('input[name="wt-engine"]:checked')?.value || 'dom';
       setScreenshotEngine(eng);
       status.className = 'wt-status';
-      status.textContent = eng === 'screen'
-        ? '真实捕获需浏览器授权：请选择「共享此标签页」。拒绝或失败时会自动回退到 DOM 渲染。'
-        : 'DOM 双引擎：图片重页优先 html2canvas-pro，其它页优先 modern-screenshot；失败自动互为回退。也可改用真实捕获。';
+      if (eng === 'screen') {
+        status.textContent = '真实捕获需浏览器授权：请选择「此标签页」。授权后飞书长文通常数秒完成。';
+      } else if (isAppShellDocumentHost()) {
+        status.textContent = '当前是飞书/文档类页面：点开始后会自动改用真实捕获（需选「此标签页」），否则 DOM 分段可能要 1 分钟。';
+      } else {
+        status.textContent = 'DOM 双引擎：图片重页优先 html2canvas-pro，其它页优先 modern-screenshot；失败自动互为回退。';
+      }
     };
 
     const engineDom = el('input', {
@@ -3587,7 +3723,7 @@
     updateHint();
     card.appendChild(el('div', {
       class: 'wt-note',
-      text: 'DOM 双引擎：图片多的页面优先 html2canvas-pro（站酷等更快），其它优先 modern-screenshot（ChatGPT 等 CSS 页更快）；失败自动回退。超高页分段走 html2canvas。仍自动修复设计稿+transform 居中活动页。'
+      text: '飞书/Notion 等长文会自动走真实捕获（十秒级）；普通页用 DOM 双引擎。拒绝屏幕共享时才回退 DOM（可能很慢）。'
     }));
   }
 
