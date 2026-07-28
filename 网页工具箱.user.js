@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.8
-// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、长截图（普通页 DOM 双引擎；飞书/Notion 等长文自动真实捕获以达十秒级）、视频下载（B站 DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4；YouTube 需本地 yt-dlp 后端）。悬浮钮可拖拽/贴边收起。一级面板快捷操作，二级面板高级选项。全站可用，美观简约。
+// @version      4.3.9
+// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、飞书文档解除复制限制与一键复制全文、长截图（普通页 DOM 双引擎；飞书/Notion 等长文自动真实捕获）、视频下载（B站 DASH / YouTube 本地后端）。悬浮钮可拖拽/贴边收起。全站可用。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
 // @supportURL   https://github.com/MerryEcho/web-toolbox/issues
@@ -69,6 +69,13 @@
 
   function isBilibili() {
     return /(^|\.)bilibili\.com$/i.test(location.hostname);
+  }
+
+  function isFeishuDocHost(hostname = location.hostname) {
+    const h = String(hostname || '').toLowerCase();
+    return /(^|\.)(larkoffice|feishu|larksuite)\.com$/i.test(h)
+      || /\.feishu\.cn$/i.test(h)
+      || /(^|\.)feishu\.cn$/i.test(h);
   }
 
   function hasSubtitleFeature() {
@@ -188,6 +195,187 @@
   async function copyImageToClipboard(blob) {
     if (!uw.ClipboardItem) throw new Error('当前浏览器不支持复制图片到剪贴板');
     await uw.navigator.clipboard.write([new uw.ClipboardItem({ 'image/png': blob })]);
+  }
+
+  // ===========================================================================
+  // 飞书文档 - 解除复制限制 & 一键复制全文
+  // ===========================================================================
+  const FEISHU_UNLOCK_STYLE_ID = 'wt-feishu-copy-unlock';
+  let feishuCopyUnlockInstalled = false;
+
+  function stripFeishuTrackingChars(text) {
+    return String(text || '')
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\u00AD]/g, '')
+      .replace(/\u00A0/g, ' ');
+  }
+
+  function cleanFeishuDocTitle(raw = document.title) {
+    return stripFeishuTrackingChars(raw)
+      .replace(/\s*[-–—]\s*(飞书云文档|飞书文档|Lark|Feishu).*$/i, '')
+      .trim();
+  }
+
+  function ensureFeishuUnlockStyle() {
+    if (document.getElementById(FEISHU_UNLOCK_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = FEISHU_UNLOCK_STYLE_ID;
+    style.textContent = `
+      html, body, .bear-web-x-container, .bear-web-x-container *,
+      #docx, #docx *, [class*="docx-"], [class*="suite-"], [data-block-id], [data-block-id] * {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+      }
+      [data-block-id] img, .bear-web-x-container img {
+        -webkit-user-drag: auto !important;
+        pointer-events: auto !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function installFeishuCopyUnlock() {
+    if (!isFeishuDocHost() || feishuCopyUnlockInstalled) return;
+    feishuCopyUnlockInstalled = true;
+
+    const attachStyle = () => ensureFeishuUnlockStyle();
+    attachStyle();
+    if (!document.head) {
+      document.addEventListener('DOMContentLoaded', attachStyle, { once: true });
+    }
+
+    const shouldIgnore = (e) => {
+      const t = e.target;
+      if (!t || typeof t.closest !== 'function') return false;
+      return !!t.closest(`#${PANEL_ID}, #${BUTTON_ID}`);
+    };
+
+    const stopFeishuGuard = (e) => {
+      if (shouldIgnore(e)) return;
+      if (e.type === 'keydown' || e.type === 'keyup') {
+        const k = String(e.key || '').toLowerCase();
+        const combo = e.ctrlKey || e.metaKey;
+        if (!(combo && (k === 'c' || k === 'x' || k === 'a'))) return;
+      }
+      // 不 preventDefault：保留浏览器原生复制/选择，只拦住飞书的拦截监听
+      e.stopImmediatePropagation();
+    };
+
+    const events = ['copy', 'cut', 'contextmenu', 'selectstart', 'dragstart', 'keydown'];
+    const bindTargets = () => {
+      const targets = [uw, document, document.documentElement, document.body].filter(Boolean);
+      for (const target of targets) {
+        for (const type of events) {
+          try { target.addEventListener(type, stopFeishuGuard, true); } catch {}
+        }
+      }
+      try {
+        document.oncopy = null;
+        document.oncut = null;
+        document.oncontextmenu = null;
+        document.onselectstart = null;
+        if (document.body) {
+          document.body.oncopy = null;
+          document.body.oncut = null;
+          document.body.oncontextmenu = null;
+          document.body.onselectstart = null;
+        }
+      } catch {}
+      attachStyle();
+    };
+
+    bindTargets();
+    // 飞书会晚一点挂监听，短时间重复加固
+    let n = 0;
+    const timer = setInterval(() => {
+      bindTargets();
+      if (++n >= 40) clearInterval(timer);
+    }, 500);
+  }
+
+  function getFeishuTextRoot() {
+    return document.querySelector('.bear-web-x-container')
+      || document.getElementById('docx')
+      || document.querySelector('[class*="docx"]')
+      || document.body;
+  }
+
+  function getFeishuScroller() {
+    const auto = typeof findBestScrollableElement === 'function' ? findBestScrollableElement() : null;
+    if (auto) return auto;
+    const root = getFeishuTextRoot();
+    if (root && root.scrollHeight > root.clientHeight + 80) return root;
+    return document.scrollingElement || document.documentElement;
+  }
+
+  function harvestFeishuLeafBlocks(root, seenIds, parts) {
+    if (!root) return;
+    for (const node of root.querySelectorAll('[data-block-id]')) {
+      if (node.querySelector('[data-block-id]')) continue;
+      const id = node.getAttribute('data-block-id');
+      if (!id || seenIds.has(id)) continue;
+      const type = node.getAttribute('data-block-type') || '';
+      if (/^(ai-summary|comment|reaction|sheet|back_ref_list|mention-panel)$/i.test(type)) continue;
+      const text = stripFeishuTrackingChars(node.innerText || '').trim();
+      if (!text) continue;
+      seenIds.add(id);
+      parts.push(text);
+    }
+  }
+
+  async function extractFeishuDocText(onProgress) {
+    const scroller = getFeishuScroller();
+    const root = getFeishuTextRoot();
+    const seenIds = new Set();
+    const parts = [];
+    const totalHeight = scroller.scrollHeight || 0;
+    const viewportHeight = scroller.clientHeight || innerHeight;
+    const step = Math.max(1, Math.floor(viewportHeight * 0.75));
+    const originalTop = scroller.scrollTop || 0;
+
+    try {
+      harvestFeishuLeafBlocks(root, seenIds, parts);
+      if (totalHeight > viewportHeight + 80) {
+        for (let y = 0; y < totalHeight; y += step) {
+          scroller.scrollTop = y;
+          await wait(28);
+          harvestFeishuLeafBlocks(root, seenIds, parts);
+          if (onProgress) {
+            onProgress(`正在收集正文… ${Math.min(100, Math.round((y / totalHeight) * 100))}%`);
+          }
+        }
+        scroller.scrollTop = Math.max(0, totalHeight - viewportHeight);
+        await wait(50);
+        harvestFeishuLeafBlocks(root, seenIds, parts);
+      }
+    } finally {
+      scroller.scrollTop = originalTop;
+    }
+
+    let text = parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    const title = cleanFeishuDocTitle();
+    if (title) {
+      const head = title.slice(0, Math.min(24, title.length));
+      if (head && !text.includes(head)) text = `${title}\n\n${text}`;
+    }
+    if (!text) throw new Error('未收集到正文。页面可能尚未加载完成，请下滑后再试。');
+    return text;
+  }
+
+  async function quickUnlockFeishuCopy(status) {
+    if (!isFeishuDocHost()) throw new Error('当前不是飞书/Lark 文档页');
+    installFeishuCopyUnlock();
+    setStatus(status, '已解除复制限制：可直接拖选文字，用 Ctrl+C 复制。', 'success');
+  }
+
+  async function quickCopyFeishuDoc(status) {
+    if (!isFeishuDocHost()) throw new Error('当前不是飞书/Lark 文档页');
+    installFeishuCopyUnlock();
+    setStatus(status, '正在滚动收集全文…');
+    const text = await extractFeishuDocText(msg => setStatus(status, msg));
+    setStatus(status, '正在写入剪贴板…');
+    const ok = await copyTextToClipboard(text);
+    if (!ok) throw new Error('复制失败，可能是浏览器权限不足');
+    setStatus(status, `已复制全文（${text.length} 字），并已解除页面复制限制。`, 'success');
   }
 
   // ===========================================================================
@@ -3179,13 +3367,36 @@
       ]));
     }
 
+    // === 飞书文档 ===
+    if (isFeishuDocHost()) {
+      groups.push(el('div', { class: 'wt-group' }, [
+        el('div', { class: 'wt-group-head' }, [
+          el('span', { class: 'wt-group-title', text: '📄 飞书文档' })
+        ]),
+        el('div', { class: 'wt-quick-row' }, [
+          quickBtn('一键复制全文', async () => {
+            try { await quickCopyFeishuDoc(status); }
+            catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+          }, { primary: true }),
+          quickBtn('解除复制限制', async () => {
+            try { await quickUnlockFeishuCopy(status); }
+            catch (err) { setStatus(status, err?.message || String(err), 'error'); throw err; }
+          }),
+        ]),
+        el('div', {
+          class: 'wt-note',
+          text: '一键复制会滚动收集正文并写入剪贴板；解除限制后可手动拖选 + Ctrl+C。'
+        }),
+      ]));
+    }
+
     // === 长截图 ===
     groups.push(el('div', { class: 'wt-group' }, [
       el('div', { class: 'wt-group-head' }, [
         el('span', { class: 'wt-group-title', text: '📸 长截图' })
       ]),
       el('div', { class: 'wt-quick-row' }, [
-        quickBtn('开始截图', () => quickScreenshot(status, false), { primary: true }),
+        quickBtn('开始截图', () => quickScreenshot(status, false), { primary: !isFeishuDocHost() }),
         quickBtn('复制截图', () => quickScreenshot(status, true)),
       ]),
       moreBtn('更多选项（手动选区/参数调整）→', () => openScreenshotPanel(status)),
@@ -3764,5 +3975,6 @@
 
   installTimedTextInterceptor();
   installNextInterceptor();
+  if (isFeishuDocHost()) installFeishuCopyUnlock();
   bootstrap();
 })();
