@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "project_id": "web-toolbox",
-  "as_of": "2026-09-03T19:40:04+00:00",
+  "as_of": "2026-09-03T19:45:51+00:00",
   "subjects": {
     "artifact:rclone-oauth-home": {
       "subject_id": "artifact:rclone-oauth-home",
@@ -60,6 +60,25 @@
       "source_event_id": "evt-20260903T194004Z-55ecb390",
       "updated_at": "2026-09-03T19:40:04+00:00"
     },
+    "artifact:rclone-oauth-terms": {
+      "subject_id": "artifact:rclone-oauth-terms",
+      "history_event_ids": [
+        "evt-20260903T194551Z-bc93c457"
+      ],
+      "subject_kind": "artifact",
+      "state": "ready",
+      "summary": "Public personal-use terms required for OAuth production branding.",
+      "scope": "OAuth terms page",
+      "successor": null,
+      "files": [
+        "docs/rclone-workspace-sync/terms.html"
+      ],
+      "claims": [],
+      "gaps": [],
+      "previous_event_id": null,
+      "source_event_id": "evt-20260903T194551Z-bc93c457",
+      "updated_at": "2026-09-03T19:45:51+00:00"
+    },
     "oauth:rclone-pages": {
       "subject_id": "oauth:rclone-pages",
       "history_event_ids": [
@@ -80,19 +99,20 @@
     "qa:rclone-oauth-pages": {
       "subject_id": "qa:rclone-oauth-pages",
       "history_event_ids": [
-        "evt-20260903T193947Z-cd0a4733"
+        "evt-20260903T193947Z-cd0a4733",
+        "evt-20260903T194551Z-b9e490d7"
       ],
       "subject_kind": "qa",
       "state": "passed",
-      "summary": "Static HTML validation passed: both pages parse, include drive.file disclosure, contain no scripts, and all local links resolve.",
+      "summary": "Static validation passed for homepage, privacy policy, and terms: HTML parses, local links resolve, and no scripts are present.",
       "scope": "docs/rclone-workspace-sync",
       "successor": null,
       "files": [],
       "claims": [],
       "gaps": [],
-      "previous_event_id": null,
-      "source_event_id": "evt-20260903T193947Z-cd0a4733",
-      "updated_at": "2026-09-03T19:39:47+00:00"
+      "previous_event_id": "evt-20260903T193947Z-cd0a4733",
+      "source_event_id": "evt-20260903T194551Z-b9e490d7",
+      "updated_at": "2026-09-03T19:45:51+00:00"
     }
   },
   "legacy_unkeyed": {

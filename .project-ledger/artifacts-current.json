@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "project_id": "web-toolbox",
-  "as_of": "2026-09-03T19:40:04+00:00",
+  "as_of": "2026-09-03T19:45:51+00:00",
   "subjects": {
     "artifact:rclone-oauth-home": {
       "schema_version": 2,
@@ -41,6 +41,19 @@
       "version": null,
       "supersedes": [],
       "subject_id": "artifact:rclone-oauth-style"
+    },
+    "artifact:rclone-oauth-terms": {
+      "schema_version": 2,
+      "id": "art-1fa5f21dfa47",
+      "timestamp": "2026-09-03T19:45:51+00:00",
+      "subject": "artifact:rclone-oauth-terms",
+      "path": "docs/rclone-workspace-sync/terms.html",
+      "kind": "terms-of-use",
+      "status": "validated",
+      "summary": "Public personal-use terms required for OAuth production branding.",
+      "version": null,
+      "supersedes": [],
+      "subject_id": "artifact:rclone-oauth-terms"
     }
   }
 }

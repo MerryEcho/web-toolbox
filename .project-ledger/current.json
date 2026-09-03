@@ -1,17 +1,17 @@
 {
   "schema_version": 2,
   "project_id": "web-toolbox",
-  "as_of": "2026-09-03T19:40:04+00:00",
+  "as_of": "2026-09-03T19:45:51+00:00",
   "goal": {
-    "status": "ready",
-    "next_action": "Publish branch and verify live HTTPS pages.",
-    "last_event_id": "evt-20260903T194004Z-55ecb390",
-    "updated_at": "2026-09-03T19:40:04+00:00"
+    "status": "passed",
+    "next_action": "Publish terms page and complete OAuth production status.",
+    "last_event_id": "evt-20260903T194551Z-b9e490d7",
+    "updated_at": "2026-09-03T19:45:51+00:00"
   },
   "counts": {
-    "decision_subjects": 5,
+    "decision_subjects": 6,
     "evidence_subjects": 0,
-    "artifact_subjects": 3,
+    "artifact_subjects": 4,
     "legacy_unkeyed_material_events": 0
   },
   "resume_order": [
