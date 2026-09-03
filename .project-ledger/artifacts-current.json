@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "project_id": "web-toolbox",
+  "as_of": "2026-09-03T19:40:04+00:00",
+  "subjects": {
+    "artifact:rclone-oauth-home": {
+      "schema_version": 2,
+      "id": "art-f842c15853fc",
+      "timestamp": "2026-09-03T19:40:03+00:00",
+      "subject": "artifact:rclone-oauth-home",
+      "path": "docs/rclone-workspace-sync/index.html",
+      "kind": "public-page",
+      "status": "validated",
+      "summary": "Public homepage describing the private utility and drive.file least-privilege boundary.",
+      "version": null,
+      "supersedes": [],
+      "subject_id": "artifact:rclone-oauth-home"
+    },
+    "artifact:rclone-oauth-privacy": {
+      "schema_version": 2,
+      "id": "art-0748b6c9dbf5",
+      "timestamp": "2026-09-03T19:40:04+00:00",
+      "subject": "artifact:rclone-oauth-privacy",
+      "path": "docs/rclone-workspace-sync/privacy.html",
+      "kind": "privacy-policy",
+      "status": "validated",
+      "summary": "Public privacy policy stating data purpose, storage, sharing, retention, and revocation controls.",
+      "version": null,
+      "supersedes": [],
+      "subject_id": "artifact:rclone-oauth-privacy"
+    },
+    "artifact:rclone-oauth-style": {
+      "schema_version": 2,
+      "id": "art-398a844dd405",
+      "timestamp": "2026-09-03T19:40:04+00:00",
+      "subject": "artifact:rclone-oauth-style",
+      "path": "docs/rclone-workspace-sync/styles.css",
+      "kind": "stylesheet",
+      "status": "validated",
+      "summary": "Local no-tracking stylesheet shared by the OAuth pages.",
+      "version": null,
+      "supersedes": [],
+      "subject_id": "artifact:rclone-oauth-style"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Private rclone workspace synchronization utility." />
+    <title>rclone Workspace Sync</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Private utility</p>
+      <h1>rclone Workspace Sync</h1>
+      <p class="lead">
+        A personal utility that moves selected workspace files between the owner's
+        computers through a dedicated folder in the owner's Google Drive.
+      </p>
+
+      <section class="card" aria-labelledby="access-heading">
+        <h2 id="access-heading">Limited Drive access</h2>
+        <p>
+          The utility requests the Google Drive <code>drive.file</code> scope. It can
+          access only files that it creates or that the owner explicitly opens with
+          it. It does not request access to the owner's entire Drive.
+        </p>
+      </section>
+
+      <section aria-labelledby="operation-heading">
+        <h2 id="operation-heading">How it operates</h2>
+        <ul>
+          <li>It is used only by the owner on the owner's Windows and Linux hosts.</li>
+          <li>OAuth credentials remain in private configuration on those hosts.</li>
+          <li>This website uses no analytics, cookies, accounts, or tracking scripts.</li>
+        </ul>
+      </section>
+
+      <footer>
+        <a href="./privacy.html">Privacy policy</a>
+        ·
+        <a href="https://github.com/MerryEcho/web-toolbox/issues">Contact</a>
+      </footer>
+    </main>
+  </body>
+</html>
