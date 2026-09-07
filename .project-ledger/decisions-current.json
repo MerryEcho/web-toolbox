@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "project_id": "web-toolbox",
-  "as_of": "2026-09-03T19:45:51+00:00",
+  "as_of": "2026-09-07T21:14:03+00:00",
   "subjects": {
     "artifact:rclone-oauth-home": {
       "subject_id": "artifact:rclone-oauth-home",
@@ -113,6 +113,24 @@
       "previous_event_id": "evt-20260903T193947Z-cd0a4733",
       "source_event_id": "evt-20260903T194551Z-b9e490d7",
       "updated_at": "2026-09-03T19:45:51+00:00"
+    },
+    "userscript-upwork-exclude": {
+      "subject_id": "userscript-upwork-exclude",
+      "history_event_ids": [
+        "evt-20260907T211403Z-7c486466"
+      ],
+      "subject_kind": "constraint",
+      "state": "active",
+      "summary": "Blacklist upwork.com so the toolbox neither injects UI nor intercepts fetch/XHR there. Use Tampermonkey @exclude plus runtime isBlockedHost guard.",
+      "scope": "Tampermonkey userscript metadata and bootstrap",
+      "reason": "Upwork login and Catalog category APIs break when the toolbox wraps fetch/XHR on upwork.com",
+      "successor": null,
+      "files": [],
+      "claims": [],
+      "gaps": [],
+      "previous_event_id": null,
+      "source_event_id": "evt-20260907T211403Z-7c486466",
+      "updated_at": "2026-09-07T21:14:03+00:00"
     }
   },
   "legacy_unkeyed": {

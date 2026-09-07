@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "project_id": "web-toolbox",
-  "status": "passed",
-  "next_action": "Publish terms page and complete OAuth production status.",
-  "last_event_id": "evt-20260903T194551Z-b9e490d7",
-  "updated_at": "2026-09-03T19:45:51+00:00"
+  "status": "active",
+  "next_action": "Reload Tampermonkey script 4.3.10 and resume Upwork Catalog setup",
+  "last_event_id": "evt-20260907T211403Z-7c486466",
+  "updated_at": "2026-09-07T21:14:03+00:00"
 }

@@ -1,6 +1,6 @@
 # 网页工具箱 Userscript
 
-整合三大功能的浏览器用户脚本，支持 YouTube 和 Bilibili，全站可用。
+整合三大功能的浏览器用户脚本，支持 YouTube 和 Bilibili。默认全站可用，但排除 Upwork。
 
 ## 功能概览
 
@@ -9,7 +9,7 @@
 | 字幕提取 | ✅ | ✅ | SRT/VTT/TXT/JSON 格式，可复制可下载 |
 | 视频简介 | ✅ | ✅ | 标题/作者/发布日期/观看数/简介文本 |
 | 评论获取 | ✅ | ✅ | 评论内容/作者/点赞/UP主标记，可复制 |
-| 长截图 | ✅ 全站 | ✅ 全站 | 默认 html2canvas-pro（支持 oklab，无需授权）；可选 getDisplayMedia |
+| 长截图 | ✅ 全站（排除 Upwork） | ✅ 全站（排除 Upwork） | 默认 html2canvas-pro（支持 oklab，无需授权）；可选 getDisplayMedia |
 | 视频下载 | ✅ 需本地后端 | ✅ 纯前端 | DASH 流合并 mp4 / 纯音频 / 黑屏音频 mp4 |
 
 ## 安装
@@ -98,6 +98,8 @@ pip install yt-dlp
 6. 点击开始截图
 
 > 悬浮钮可拖动到任意位置；双击可贴边收起成细条，点击展开。位置与收起状态会记住。
+>
+> **站点黑名单**：`upwork.com` 及其子域不会注入工具箱，也不会拦截该站的 `fetch` / `XMLHttpRequest`。Tampermonkey 的 `@exclude` 与脚本启动保护同时生效。
 
 > 默认不弹屏幕共享。需要像素级真实画面时再选真实捕获（建议共享「此标签页」）。超长页面自动分卷 ZIP，并自动裁剪吸顶栏。
 

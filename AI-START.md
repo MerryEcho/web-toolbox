@@ -5,9 +5,9 @@ This is a current-truth resume packet. Read projections before chronological his
 
 ## Current goal
 
-- Status: `passed`
-- Next action: Publish terms page and complete OAuth production status.
-- Last event: `evt-20260903T194551Z-b9e490d7` at `2026-09-03T19:45:51+00:00`
+- Status: `active`
+- Next action: Reload Tampermonkey script 4.3.10 and resume Upwork Catalog setup
+- Last event: `evt-20260907T211403Z-7c486466` at `2026-09-07T21:14:03+00:00`
 
 ## Resume order
 
@@ -25,6 +25,7 @@ This is a current-truth resume packet. Read projections before chronological his
 - `ready` · `artifact:rclone-oauth-terms` · `OAuth terms page` — Public personal-use terms required for OAuth production branding..
 - `in-progress` · `oauth:rclone-pages` · `docs/rclone-workspace-sync and GitHub Pages only` — Publish minimal no-tracking homepage and privacy policy solely for the private rclone Workspace Sync OAuth client; disclose drive.file scope and no data collection or sharing..
 - `passed` · `qa:rclone-oauth-pages` · `docs/rclone-workspace-sync` — Static validation passed for homepage, privacy policy, and terms: HTML parses, local links resolve, and no scripts are present..
+- `active` · `userscript-upwork-exclude` · `Tampermonkey userscript metadata and bootstrap` — Blacklist upwork.com so the toolbox neither injects UI nor intercepts fetch/XHR there. Use Tampermonkey @exclude plus runtime isBlockedHost guard.. Reason: Upwork login and Catalog category APIs break when the toolbox wraps fetch/XHR on upwork.com
 
 ## Legacy material history
 
@@ -47,6 +48,7 @@ No authority files registered.
 
 ## Recent activity (audit only)
 
+- `2026-09-07T21:14:03+00:00` · `decision` · `evt-20260907T211403Z-7c486466` — Blacklist upwork.com so the toolbox neither injects UI nor intercepts fetch/XHR there. Use Tampermonkey @exclude plus runtime isBlockedHost guard.. Next: Reload Tampermonkey script 4.3.10 and resume Upwork Catalog setup
 - `2026-09-03T19:45:51+00:00` · `qa` · `evt-20260903T194551Z-b9e490d7` — Static validation passed for homepage, privacy policy, and terms: HTML parses, local links resolve, and no scripts are present.. Next: Publish terms page and complete OAuth production status.
 - `2026-09-03T19:45:51+00:00` · `artifact` · `evt-20260903T194551Z-bc93c457` — Public personal-use terms required for OAuth production branding..
 - `2026-09-03T19:40:04+00:00` · `artifact` · `evt-20260903T194004Z-55ecb390` — Local no-tracking stylesheet shared by the OAuth pages..

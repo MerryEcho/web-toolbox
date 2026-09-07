@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         网页工具箱 - 视频文字源 & 长截图 & 视频下载
 // @namespace    https://chatgpt.com/
-// @version      4.3.9
-// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、飞书文档解除复制限制与一键复制全文、长截图（普通页 DOM 双引擎；飞书/Notion 等长文自动真实捕获）、视频下载（B站 DASH / YouTube 本地后端）。悬浮钮可拖拽/贴边收起。全站可用。
+// @version      4.3.10
+// @description  整合视频文字源提取（YouTube/B站：字幕、简介、评论）、飞书文档解除复制限制与一键复制全文、长截图（普通页 DOM 双引擎；飞书/Notion 等长文自动真实捕获）、视频下载（B站 DASH / YouTube 本地后端）。悬浮钮可拖拽/贴边收起。全站可用，排除 Upwork。
 // @author       ChatGPT
 // @homepageURL  https://github.com/MerryEcho/web-toolbox
 // @supportURL   https://github.com/MerryEcho/web-toolbox/issues
@@ -14,6 +14,8 @@
 // @resource     mp4box https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js
 // @resource     mp4muxer https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.js
 // @match        *://*/*
+// @exclude      *://*.upwork.com/*
+// @exclude      *://upwork.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
 // @grant        GM_addStyle
@@ -76,6 +78,10 @@
     return /(^|\.)(larkoffice|feishu|larksuite)\.com$/i.test(h)
       || /\.feishu\.cn$/i.test(h)
       || /(^|\.)feishu\.cn$/i.test(h);
+  }
+
+  function isBlockedHost(hostname = location.hostname) {
+    return /(^|\.)upwork\.com$/i.test(String(hostname || ''));
   }
 
   function hasSubtitleFeature() {
@@ -3972,6 +3978,8 @@
       ensureButton();
     }
   }
+
+  if (isBlockedHost()) return;
 
   installTimedTextInterceptor();
   installNextInterceptor();
